@@ -33,5 +33,5 @@ The installer touches only our own hook entries, the `keypad` MCP server and `CL
 | Keypad unplugged / out of range | requests fail immediately; hooks return `{}`; Claude Code shows its own prompt |
 | Agent not running | hook shim can't connect and prints `{}` in milliseconds; MCP tool says `KEYPAD UNAVAILABLE` |
 | No press in time | the screen closes, Claude Code falls back |
-| You use the PC | the pending request is handed back (keyboard or mouse input after it appeared) |
+| You use the PC | the pending request is handed back when you type after it appeared (keyboard on macOS; keyboard or mouse on Windows) |
 | Keypad reboots mid-request | it re-announces itself; the host re-sends the active screen |

@@ -63,11 +63,10 @@ off.
 {"t":"close","id":"p-82","why":"timeout"}
 {"t":"toast","text":"Worker started in api","level":"info","ms":2500}
 {"t":"provision","ssid":"Home","pass":"...","host":"h-5c1e2a9b","key":"<64 hex>","name":"Desk keypad"}   USB only
-{"t":"unpair"}                                                                                              USB only
+{"t":"unpair"}                                                      USB, or the paired host over Wi-Fi
 {"t":"ota_begin","size":1234567,"md5":"<32 hex>"}
 {"t":"ota_data","off":0,"d":"<base64, <= 2048 bytes raw>"}
 {"t":"ota_end"}
-{"t":"test"}
 ```
 
 ### Templates
@@ -78,7 +77,11 @@ off.
 | `list` | 1–8 pick the item at that position on the current page (8 per page) | rotate changes page, click → `click` act |
 | `multi` | 1–7 toggle items, 8 confirms | click → `click` act |
 
-`tone`: `accent` (default) · `ok` · `warn` · `danger` · `dim`.
+`tone`: `accent` (default) · `ok` · `warn` · `danger` · `dim` · `info`.
+
+Debug firmware builds (`pio run -e keypad-debug`) also accept
+`{"t":"key","key":n}` over USB to simulate a press, and report key events
+as `log` messages. Release builds do not.
 
 On the status screen the encoder rotates through `sessions` locally and
 sends `session`; a click sends `session` with `act:"follow"`.
@@ -121,10 +124,10 @@ sends `session`; a click sends `session` with `act:"follow"`.
   within 1.5 s the host re-sends it once. The device dedupes by `id`.
 * **One screen at a time:** the host queues interactive requests FIFO across
   all Claude Code sessions. A new `screen` replaces the current one.
-* **Lock after answer:** after a `press` the device ignores keys until a new
-  `screen` id or `status` arrives. A `screen` whose id equals the last
-  answered id makes the device re-send its cached `press` (the answer was
-  lost on a reconnect).
+* **Answer once:** after a `press` the device closes that screen locally
+  (back to the status screen) and ignores it from then on. A `screen` whose
+  id equals the last answered id makes the device re-send its cached
+  `press` (the answer was lost on a reconnect).
 * **Clean presses only:** a press counts only if no other key is held
   (matrix ghosting), and only if it started at least 150 ms after the screen
   appeared (stale presses).

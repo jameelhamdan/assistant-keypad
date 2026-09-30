@@ -295,3 +295,12 @@ func TestSnapshotListsAreNeverNull(t *testing.T) {
 		t.Fatalf("snapshot has null lists: %s", b)
 	}
 }
+
+func TestSnapshotNeverExposesPairingKeys(t *testing.T) {
+	e := setup(t, nil)
+	_, _ = e.a.Store.Update("kp-000002", func(d *config.Device) { d.Key = "deadbeef" })
+	b, _ := json.Marshal(e.a.Snapshot())
+	if strings.Contains(string(b), "deadbeef") || !strings.Contains(string(b), `"paired":true`) {
+		t.Fatalf("snapshot: %s", b)
+	}
+}

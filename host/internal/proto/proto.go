@@ -121,7 +121,7 @@ type OTAData struct {
 	D   []byte `json:"d"` // base64 in JSON
 }
 
-// Simple is any message that carries only its type (ping, unpair, test, ota_end).
+// Simple is any message that carries only its type (who, ping, unpair, ota_end).
 type Simple struct {
 	T string `json:"t"`
 }

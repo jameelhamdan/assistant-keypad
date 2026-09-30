@@ -75,7 +75,7 @@ function renderOverview() {
   }
   for (const d of status.devices) {
     const k = live.get(d.id);
-    const how = k ? linkName(k.link) : (d.key === "true" ? "Offline" : "Not connected");
+    const how = k ? linkName(k.link) : (d.paired ? "Offline" : "Not connected");
     const card = el("div", { class: "card" },
       el("div", { class: "kp-head" }, el("b", { text: d.name }), el("span", { class: "pill" + (k ? " live" : ""), text: how })),
       el("div", { class: "muted", text: k ? [k.wifi?.ip, k.battery ? k.battery + "%" : "", "fw " + k.fw].filter(Boolean).join(" · ") : d.id }));
@@ -131,7 +131,7 @@ function renderKeypads() {
     link.textContent = k ? linkName(k.link) : "offline";
     link.classList.toggle("live", !!k);
     const meta = [];
-    if (d.key === "true") meta.push("paired · Wi-Fi " + (d.ssid || "?"));
+    if (d.paired) meta.push("paired · Wi-Fi " + (d.ssid || "?"));
     else meta.push("USB only");
     if (k?.wifi?.state === "up") meta.push(k.wifi.ip + " (" + k.wifi.rssi + " dBm)");
     if (k?.fw) meta.push("firmware " + k.fw);

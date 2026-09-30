@@ -53,7 +53,7 @@ func cmdInstall() error {
 	stopAgent()
 	cfg, _ := config.Load()
 	if err := claudecfg.Install(selfPath(), cfg.Behavior.MaxContinues); err != nil {
-		return fmt.Errorf("Claude Code integration: %w", err)
+		return fmt.Errorf("installing the Claude Code integration: %w", err)
 	}
 	fmt.Println("Claude Code integration installed:", claudecfg.SettingsPath())
 	if err := service.Install(selfPath()); err != nil {
@@ -139,7 +139,7 @@ func cmdStatus() error {
 		if conn == "" {
 			conn = "offline"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", d.ID, d.Name, conn, d.Key)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%v\n", d.ID, d.Name, conn, d.Paired)
 	}
 	fmt.Fprintln(w, "\nSESSION\tPROJECT\tSTATE\tDETAIL")
 	for _, x := range s.Sessions {

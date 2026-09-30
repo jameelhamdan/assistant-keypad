@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/jameelhamdan/assistant-keypad/host/internal/core"
 	"github.com/jameelhamdan/assistant-keypad/host/internal/firmware"
 	"github.com/jameelhamdan/assistant-keypad/host/internal/osutil"
+	"github.com/jameelhamdan/assistant-keypad/host/internal/proto"
 	"github.com/jameelhamdan/assistant-keypad/host/internal/webui"
 )
 
@@ -247,7 +249,7 @@ func (s *Server) routes() http.Handler {
 		})
 		if err == nil {
 			a.Hub.SendSettings(id)
-			a.SetConfig(a.Config()) // re-push status with the new project filter
+			a.Refresh() // the project filter may have changed
 		}
 		result(w, err)
 	})
@@ -271,7 +273,8 @@ func (s *Server) routes() http.Handler {
 			fail(w, errors.New("keypad not connected"))
 			return
 		}
-		result(w, c.Send(map[string]any{"t": "toast", "text": "Hello from " + a.Store.HostID(), "level": "ok", "ms": 3000}))
+		host, _ := os.Hostname()
+		result(w, c.Send(proto.Toast{T: "toast", Text: "This is " + firstField(host), Level: "ok", MS: 4000}))
 	})
 	mux.HandleFunc("POST /devices/{id}/update", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Path string }
@@ -377,6 +380,13 @@ func result(w http.ResponseWriter, err error) {
 }
 
 func ok() map[string]bool { return map[string]bool{"ok": true} }
+
+func firstField(host string) string {
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		return host[:i]
+	}
+	return host
+}
 
 func clip(s string, n int) string {
 	r := []rune(s)

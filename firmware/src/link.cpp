@@ -9,7 +9,6 @@
 
 #include "config.h"
 #include "crypto.h"
-#include "model.h"
 
 namespace {
 
@@ -44,6 +43,7 @@ Stored cfg;
 bool haveCfg = false;
 uint32_t wifiStartedAt = 0;
 bool serving = false;
+WifiStatus wifi = {WifiState::Off, "", 0};
 WiFiServer server(TCP_PORT);
 
 constexpr size_t FRAME_MAX = 4096;
@@ -84,15 +84,6 @@ void refuse(Session &s, const char *why) {
     s.close();
 }
 
-void hexTo(const char *hex, uint8_t *out, size_t n, bool &ok) {
-    ok = hex && strlen(hex) == n * 2;
-    for (size_t i = 0; ok && i < n; i++) {
-        unsigned v;
-        ok = sscanf(hex + 2 * i, "%2x", &v) == 1;
-        out[i] = (uint8_t)v;
-    }
-}
-
 // Plain "hi" frame from a connecting host.
 void handshake(Session &s, const uint8_t *f, size_t n) {
     JsonDocument doc;
@@ -103,9 +94,7 @@ void handshake(Session &s, const uint8_t *f, size_t n) {
     if (!cfg.paired) { refuse(s, "keypad is not paired"); return; }
     if (strcmp(doc["host"] | "", cfg.host) != 0) { refuse(s, "paired with another computer"); return; }
     uint8_t nh[16], nd[16], h2d[32], d2h[32];
-    bool ok;
-    hexTo(doc["n"] | "", nh, 16, ok);
-    if (!ok) { refuse(s, "bad nonce"); return; }
+    if (!hexDecode(doc["n"] | "", nh, 16)) { refuse(s, "bad nonce"); return; }
     esp_fill_random(nd, sizeof(nd));
     if (!deriveKeys(cfg.key, nh, nd, h2d, d2h) || !s.tx.init(d2h) || !s.rx.init(h2d)) { s.close(); return; }
     memset(h2d, 0, 32);
@@ -163,14 +152,14 @@ void pollSession(Session &s) {
 
 void pollWifi() {
     if (!haveCfg || !cfg.ssid[0]) {
-        model.wifi = WifiState::Off;
+        wifi.state = WifiState::Off;
         return;
     }
     wl_status_t st = WiFi.status();
     if (st == WL_CONNECTED) {
-        if (model.wifi != WifiState::Up) {
-            model.wifi = WifiState::Up;
-            strlcpy(model.ip, WiFi.localIP().toString().c_str(), sizeof(model.ip));
+        if (wifi.state != WifiState::Up) {
+            wifi.state = WifiState::Up;
+            strlcpy(wifi.ip, WiFi.localIP().toString().c_str(), sizeof(wifi.ip));
             if (!serving) {
                 server.begin();
                 server.setNoDelay(true);
@@ -185,14 +174,14 @@ void pollWifi() {
                 MDNS.addServiceTxt("ckeypad", "tcp", "paired", cfg.paired ? "1" : "0");
             }
         }
-        model.rssi = WiFi.RSSI();
+        wifi.rssi = WiFi.RSSI();
     } else {
-        if (model.wifi == WifiState::Up) {
+        if (wifi.state == WifiState::Up) {
             active->close();
             pending->close();
         }
-        model.wifi = (millis() - wifiStartedAt > 20000 && st != WL_IDLE_STATUS) ? WifiState::Failed : WifiState::Connecting;
-        model.ip[0] = '\0';
+        wifi.state = (millis() - wifiStartedAt > 20000 && st != WL_IDLE_STATUS) ? WifiState::Failed : WifiState::Connecting;
+        wifi.ip[0] = '\0';
     }
     if (!serving) return;
     WiFiClient c = server.accept();
@@ -224,14 +213,13 @@ void linkConfigure(const Stored &st) {
     haveCfg = true;
     active->close();
     pending->close();
-    strlcpy(model.ssid, st.ssid, sizeof(model.ssid));
-    model.wifi = WifiState::Off;
+    wifi = {WifiState::Off, "", 0};
     WiFi.disconnect(true);
     if (st.ssid[0]) {
         WiFi.mode(WIFI_STA);
         WiFi.begin(st.ssid, st.pass);
         wifiStartedAt = millis();
-        model.wifi = WifiState::Connecting;
+        wifi.state = WifiState::Connecting;
     }
 }
 
@@ -258,7 +246,4 @@ bool linkSend(Src src, const char *json, size_t len) {
 
 bool linkNetAuthed() { return active->authed; }
 
-void linkNetDrop() {
-    active->close();
-    pending->close();
-}
+WifiStatus linkWifi() { return wifi; }

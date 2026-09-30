@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "config.h"
+#include "link.h"
 
 enum class Tone : uint8_t { Accent, Ok, Warn, Danger, Dim, Info };
 
@@ -57,8 +58,6 @@ struct ScreenModel {
 };
 
 enum class Mode : uint8_t { Boot, Waiting, Status, Screen, Test, Ota };
-
-enum class WifiState : uint8_t { Off, Connecting, Up, Failed };
 
 struct Model {
     Mode mode;

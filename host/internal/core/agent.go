@@ -88,6 +88,10 @@ func (a *Agent) Run(ctx context.Context) {
 	}
 }
 
+// Refresh re-sends the status screen to every keypad (e.g. after a keypad's
+// project filter changed).
+func (a *Agent) Refresh() { a.markDirty() }
+
 func (a *Agent) markDirty() {
 	select {
 	case a.dirty <- struct{}{}:
@@ -283,32 +287,44 @@ func (a *Agent) takePending(sid string) (config.Shortcut, bool) {
 
 // ---- screen builders -----------------------------------------------------------------
 
+// withPC adds the "answer on the PC" key unless its key is already taken.
+func withPC(keys proto.Keys, pc int) proto.Keys {
+	if _, taken := keys[strconv.Itoa(pc)]; !taken {
+		keys.Set(pc, "PC", "pc", "dim")
+	}
+	return keys
+}
+
 func (a *Agent) yesNo(project, title, body, click string) proto.Screen {
 	k := a.Config().Keys
-	keys := proto.Keys{}.Set(k.Yes, "Yes", "yes", "ok").Set(k.No, "No", "no", "danger")
-	if k.PC != k.Yes && k.PC != k.No {
-		keys.Set(k.PC, "PC", "pc", "dim")
-	}
+	keys := withPC(proto.Keys{}.Set(k.Yes, "Yes", "yes", "ok").Set(k.No, "No", "no", "danger"), k.PC)
 	return proto.Screen{Tpl: "prompt", Title: title, Project: project, Body: body, Keys: keys, Click: click}
 }
 
 // ---- snapshot for the tray / settings UI ---------------------------------------------
 
+// DeviceView is a known keypad without its pairing key.
+type DeviceView struct {
+	config.Device
+	Key    string `json:"key,omitempty"` // always empty: keys never leave the agent
+	Paired bool   `json:"paired"`
+}
+
 type Snapshot struct {
-	HostID     string          `json:"host_id"`
-	Paused     bool            `json:"paused"`
-	Busy       bool            `json:"busy"`
-	Queue      int             `json:"queue"`
-	Keypads    []device.Info   `json:"keypads"`
-	Devices    []config.Device `json:"devices"`
-	Discovered []device.Seen   `json:"discovered"`
-	Sessions   []Session       `json:"sessions"`
-	Workers    []WorkerInfo    `json:"workers"`
+	HostID     string        `json:"host_id"`
+	Paused     bool          `json:"paused"`
+	Busy       bool          `json:"busy"`
+	Queue      int           `json:"queue"`
+	Keypads    []device.Info `json:"keypads"`
+	Devices    []DeviceView  `json:"devices"`
+	Discovered []device.Seen `json:"discovered"`
+	Sessions   []Session     `json:"sessions"`
+	Workers    []WorkerInfo  `json:"workers"`
 }
 
 func (a *Agent) Snapshot() Snapshot {
 	s := Snapshot{HostID: a.Store.HostID(), Paused: a.Paused(), Busy: a.Dialogs.Busy(), Queue: a.Dialogs.Queued(),
-		Sessions: a.Sessions.Live(), Workers: a.Workers.List(), Keypads: []device.Info{}, Devices: []config.Device{},
+		Sessions: a.Sessions.Live(), Workers: a.Workers.List(), Keypads: []device.Info{}, Devices: []DeviceView{},
 		Discovered: []device.Seen{}}
 	if s.Sessions == nil {
 		s.Sessions = []Session{} // JSON [] rather than null
@@ -322,8 +338,7 @@ func (a *Agent) Snapshot() Snapshot {
 		}
 	}
 	for _, d := range a.Store.Devices() {
-		d.Key = strconv.FormatBool(d.Key != "") // never expose keys; "true" = paired
-		s.Devices = append(s.Devices, d)
+		s.Devices = append(s.Devices, DeviceView{Device: d, Paired: d.Key != ""})
 	}
 	return s
 }
