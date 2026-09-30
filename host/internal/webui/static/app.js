@@ -60,6 +60,7 @@ let editing = new Set(); // keypad ids with unsaved edits: don't overwrite their
 
 async function refresh() {
   try { status = await api("GET", "/status"); } catch { return; }
+  for (const k of ["keypads", "devices", "sessions", "workers", "discovered"]) status[k] ||= [];
   $("#paused").checked = status.paused;
   renderOverview();
   renderKeypads();
@@ -202,19 +203,19 @@ function bindKeypad(card, id) {
 }
 
 async function openPair(id, name) {
-  const dlg = $("#pair"), f = $("#f-pair");
+  const dlg = $("#pair"), f = $("#f-pair"), fld = n => f.elements.namedItem(n);
   $("#pair-id").textContent = id;
-  f.name.value = name && name !== id ? name : "";
-  f.pass.value = "";
+  fld("kpname").value = name && name !== id ? name : "";
+  fld("pass").value = "";
   $(".msg", f).textContent = "";
-  if (!f.ssid.value) api("GET", "/ssid").then(r => { if (!f.ssid.value) f.ssid.value = r.ssid; }).catch(() => {});
+  if (!fld("ssid").value) api("GET", "/ssid").then(r => { if (!fld("ssid").value) fld("ssid").value = r.ssid; }).catch(() => {});
   dlg.showModal();
   f.onsubmit = ev => {
     if (ev.submitter?.value !== "ok") return;
     ev.preventDefault();
     run(ev.submitter, $(".msg", f), async () => {
-      await api("POST", `/devices/${id}/provision`, { ssid: f.ssid.value.trim(), pass: f.pass.value, name: f.name.value.trim() });
-      f.pass.value = "";
+      await api("POST", `/devices/${id}/provision`, { ssid: fld("ssid").value.trim(), pass: fld("pass").value, name: fld("kpname").value.trim() });
+      fld("pass").value = "";
       setTimeout(() => dlg.close(), 900);
       refresh();
     }, "Paired. The keypad is joining Wi-Fi");

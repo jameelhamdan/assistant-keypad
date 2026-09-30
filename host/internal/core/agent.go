@@ -308,12 +308,18 @@ type Snapshot struct {
 
 func (a *Agent) Snapshot() Snapshot {
 	s := Snapshot{HostID: a.Store.HostID(), Paused: a.Paused(), Busy: a.Dialogs.Busy(), Queue: a.Dialogs.Queued(),
-		Sessions: a.Sessions.Live(), Workers: a.Workers.List(), Keypads: []device.Info{}, Devices: []config.Device{}}
+		Sessions: a.Sessions.Live(), Workers: a.Workers.List(), Keypads: []device.Info{}, Devices: []config.Device{},
+		Discovered: []device.Seen{}}
+	if s.Sessions == nil {
+		s.Sessions = []Session{} // JSON [] rather than null
+	}
 	if a.Hub != nil {
 		for _, c := range a.Hub.Conns() {
 			s.Keypads = append(s.Keypads, c.Info())
 		}
-		s.Discovered = a.Hub.Discovered()
+		if d := a.Hub.Discovered(); d != nil {
+			s.Discovered = d
+		}
 	}
 	for _, d := range a.Store.Devices() {
 		d.Key = strconv.FormatBool(d.Key != "") // never expose keys; "true" = paired
