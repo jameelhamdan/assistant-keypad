@@ -46,6 +46,12 @@ func NewDialogs(disp Display, idle func() (time.Duration, bool), hb func() confi
 	return &Dialogs{disp: disp, idle: idle, handback: hb, log: log, onChange: func() {}}
 }
 
+// routed is a press together with the keypad it came from.
+type routed struct {
+	in  proto.In
+	dev string
+}
+
 // Dialog is one interactive request; it may show several screens.
 type Dialog struct {
 	m        *Dialogs
@@ -53,7 +59,7 @@ type Dialog struct {
 	Project  string
 	handback bool
 	turn     chan struct{}
-	press    chan proto.In
+	press    chan routed
 
 	mu        sync.Mutex
 	screen    *proto.Screen
@@ -88,7 +94,7 @@ func (m *Dialogs) Run(ctx context.Context, project, kind string, handback bool, 
 	m.mu.Lock()
 	m.seq++
 	d := &Dialog{m: m, id: fmt.Sprintf("%c%d", kind[0], m.seq), Project: project, handback: handback,
-		turn: make(chan struct{}), press: make(chan proto.In, 4)}
+		turn: make(chan struct{}), press: make(chan routed, 4)}
 	m.queue = append(m.queue, d)
 	m.promoteLocked()
 	m.mu.Unlock()
@@ -153,7 +159,7 @@ func (m *Dialogs) Press(dev string, in proto.In) bool {
 		return false
 	}
 	select {
-	case d.press <- withDev(in, dev):
+	case d.press <- routed{in, dev}:
 	default:
 	}
 	return true
@@ -194,9 +200,6 @@ func (m *Dialogs) Reshow(dev string) bool {
 	return true
 }
 
-// device id travels in the Msg field of the routed press
-func withDev(in proto.In, dev string) proto.In { in.Msg = dev; return in }
-
 // Show displays a screen and waits for a press. The press's act is
 // returned; "pc" (hand to PC), timeouts and disconnects become errors.
 func (d *Dialog) Show(ctx context.Context, s proto.Screen) (proto.In, error) {
@@ -226,15 +229,13 @@ func (d *Dialog) Show(ctx context.Context, s proto.Screen) (proto.In, error) {
 	defer tick.Stop()
 	for {
 		select {
-		case p := <-d.press:
-			dev := p.Msg
-			p.Msg = ""
-			if p.Act == "pc" {
-				d.closeScreen("pc", dev)
-				return p, ErrToPC
+		case r := <-d.press:
+			if r.in.Act == "pc" {
+				d.closeScreen("pc", r.dev)
+				return r.in, ErrToPC
 			}
-			d.closeScreen("answered", dev)
-			return p, nil
+			d.closeScreen("answered", r.dev)
+			return r.in, nil
 		case <-resend.C:
 			d.mu.Lock()
 			for _, id := range d.targets {

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "crypto.h"
 #include "input.h"
 #include "link.h"
 #include "model.h"
@@ -207,24 +208,24 @@ void showScreen(JsonDocument &doc) {
     model.mode = Mode::Screen;
 }
 
+void applyWifiConfig() { strlcpy(model.ssid, stored.ssid, sizeof(model.ssid)); }
+
 void provision(JsonDocument &doc, Src src) {
     JsonDocument r;
     r["t"] = "provisioned";
     const char *key = doc["key"] | "";
     const char *host = doc["host"] | "";
     const char *ssid = doc["ssid"] | "";
-    bool ok = strlen(key) == 64 && host[0] && ssid[0] && strlen(ssid) < sizeof(stored.ssid);
-    for (int i = 0; ok && i < 32; i++) {
-        unsigned v;
-        ok = sscanf(key + 2 * i, "%2x", &v) == 1;
-        stored.key[i] = (uint8_t)v;
-    }
+    uint8_t newKey[sizeof(stored.key)];
+    bool ok = host[0] && strlen(host) < sizeof(stored.host) && ssid[0] && strlen(ssid) < sizeof(stored.ssid) &&
+              hexDecode(key, newKey, sizeof(newKey));
     if (!ok) {
         r["ok"] = false;
         r["err"] = "invalid settings";
         sendTo(src, r);
         return;
     }
+    memcpy(stored.key, newKey, sizeof(newKey));
     strlcpy(stored.ssid, ssid, sizeof(stored.ssid));
     strlcpy(stored.pass, doc["pass"] | "", sizeof(stored.pass));
     strlcpy(stored.host, host, sizeof(stored.host));
@@ -235,6 +236,7 @@ void provision(JsonDocument &doc, Src src) {
     copyText(model.name, sizeof(model.name), stored.name);
     r["ok"] = true;
     sendTo(src, r);
+    applyWifiConfig();
     linkConfigure(stored);
     appToast("Paired. Joining Wi-Fi...", Tone::Ok, 3000);
 }
@@ -246,6 +248,7 @@ void unpair() {
     storeSave(stored);
     model.paired = false;
     links[(int)Src::Net].acked = false;
+    applyWifiConfig();
     linkConfigure(stored);
     appToast("Wi-Fi pairing removed", Tone::Warn, 3000);
 }
@@ -289,15 +292,21 @@ void onMessage(char *json, size_t len, Src src) {
         markDirty();
         return;
     }
-    // Everything below needs a greeted host, except provisioning over the cable.
-    bool usbOnly = !strcmp(t, "provision") || !strcmp(t, "unpair");
-    if (usbOnly) {
-        if (src == Src::Usb) (!strcmp(t, "provision") ? provision(doc, src) : unpair());
+    // Pairing needs the cable (physical access).
+    if (!strcmp(t, "provision")) {
+        if (src == Src::Usb) provision(doc, src);
         markDirty();
         return;
     }
+    // Everything below needs a greeted host.
     if (!L.acked) {
         sendHello(src);
+        return;
+    }
+    // Forgetting works over the cable or from the paired host over Wi-Fi.
+    if (!strcmp(t, "unpair")) {
+        unpair();
+        markDirty();
         return;
     }
 
@@ -327,8 +336,6 @@ void onMessage(char *json, size_t len, Src src) {
     } else if (!strcmp(t, "toast")) {
         const char *lv = doc["level"] | "info";
         appToast(doc["text"] | "", !strcmp(lv, "info") ? Tone::Info : toneOf(lv), doc["ms"] | 2500);
-    } else if (!strcmp(t, "test")) {
-        model.mode = Mode::Test;
     } else if (!strcmp(t, "ota_begin")) {
         const char *err = nullptr;
         bool ok = otaBegin(doc["size"] | 0, doc["md5"] | "", &err);
@@ -441,7 +448,7 @@ void onKey(const KeyEvent &ev) {
                 break;
             case Tpl::List: {
                 int idx = sc.page * ITEMS_PER_PAGE + ev.key - 1;
-                if (idx < sc.nItems) answer(ev.key, "item", idx, "Sent");
+                if (idx < sc.nItems) answer(ev.key, "item", idx, sc.items[idx]);
                 break;
             }
             case Tpl::Multi:
@@ -493,9 +500,9 @@ void onEncoder(int32_t steps) {
 // ---- periodic ----------------------------------------------------------------------------
 
 int8_t readBattery() {
-    uint32_t mv = analogReadMilliVolts(PIN_BATTERY) * 2;   // 1:2 divider
+    int mv = (int)analogReadMilliVolts(PIN_BATTERY) * 2;   // 1:2 divider
     if (mv > 4300 || mv < 2800) return -1;                 // on USB power / no battery
-    int pct = (int)((mv - 3300) * 100 / (4150 - 3300));
+    int pct = (mv - 3300) * 100 / (4150 - 3300);
     return (int8_t)(pct < 0 ? 0 : pct > 100 ? 100 : pct);
 }
 
@@ -540,12 +547,14 @@ void tick() {
         model.mode = connected ? Mode::Status : Mode::Waiting;
     }
 
-    static WifiState lastWifi = WifiState::Off;
-    if (model.wifi != lastWifi) {
-        lastWifi = model.wifi;
+    WifiStatus w = linkWifi();
+    if (w.state != model.wifi || strcmp(w.ip, model.ip) != 0) {
+        model.wifi = w.state;
+        strlcpy(model.ip, w.ip, sizeof(model.ip));
         sendWifiReport();
         markDirty();
     }
+    model.rssi = w.rssi;
     if (now - lastBattery > 10000 || lastBattery == 0) {
         lastBattery = now;
         model.battery = readBattery();
@@ -574,6 +583,7 @@ void appBegin() {
     model.paired = stored.paired;
     model.battery = -1;
     copyText(model.name, sizeof(model.name), stored.name);
+    applyWifiConfig();
     linkBegin(onMessage, model.id);
     linkConfigure(stored);
 }

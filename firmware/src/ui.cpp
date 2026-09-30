@@ -129,19 +129,18 @@ int16_t text(const Font &f, int16_t x, int16_t y, const char *s, uint16_t color,
 }
 
 // Single line cut to `cells` with an ellipsis.
-int16_t fit(const Font &f, int16_t x, int16_t y, int cells, const char *s, uint16_t color, bool bold = false,
-            char align = 'L') {
+int16_t fit(const Font &f, int16_t x, int16_t y, int cells, const char *s, uint16_t color, bool bold = false) {
     static char buf[256];
     size_t len = strlen(s);
     int w = cells * f.cw;
-    if (measureWith(f, s, len) <= w) return drawLine(f, x, y, w, s, len, color, align, bold);
+    if (measureWith(f, s, len) <= w) return drawLine(f, x, y, w, s, len, color, 'L', bold);
     while (len > 0 && measureWith(f, s, len) + f.cw > w) {
         len--;
         while (len > 0 && ((unsigned char)s[len] & 0xC0) == 0x80) len--;
     }
     // Spleen has no U+2026: draw the ellipsis as three dots in one cell.
     snprintf(buf, sizeof(buf), "%.*s", (int)len, s);
-    int16_t end = drawLine(f, x, y, w, buf, strlen(buf), color, align, bold);
+    int16_t end = drawLine(f, x, y, w, buf, strlen(buf), color, 'L', bold);
     for (int i = 0; i < 3; i++) cv->fillRect(end + 1 + i * 2, y + f.ascent - 1, 1, 1, color);
     return end + f.cw;
 }
@@ -268,9 +267,7 @@ void hintLine(const Model &m, const char *hint) {
     uint32_t now = millis();
     if (m.sentUntil && (int32_t)(m.sentUntil - now) > 0) {
         gElbow(X0, y - 3, T->dim);
-        char s[48];
-        snprintf(s, sizeof(s), "%s", m.sent);
-        text(SMALL, X0 + 12, y, s, T->success);
+        fit(SMALL, X0 + 12, y, 50, m.sent, T->success);
         return;
     }
     if (m.toastUntil && (int32_t)(m.toastUntil - now) > 0) {
@@ -291,7 +288,7 @@ void optionRow(int16_t x, int16_t y, int cells, uint8_t key, const char *label, 
 }
 
 // ---- screens ------------------------------------------------------------------------------------
-void drawBoot(const Model &m) {
+void drawBoot() {
     box(X0, 36, 320 - 2 * X0, 70, T->claude);
     gStar(X0 + 14, 52, T->claude, (millis() / 120) & 7);
     text(MONO, X0 + 30, 52, "Welcome to", T->text);
@@ -300,7 +297,6 @@ void drawBoot(const Model &m) {
     char v[40];
     snprintf(v, sizeof(v), "v%s", KEYPAD_FW_VERSION);
     drawLine(SMALL, 0, 120, 320, v, strlen(v), T->dim, 'C');
-    (void)m;
 }
 
 void drawWaiting(const Model &m) {
@@ -399,20 +395,24 @@ void drawStatus(const Model &m) {
     hintLine(m, st.n > 1 ? "turn: switch session   click: follow latest" : nullptr);
 }
 
-// Top line of a dialog: bold title, dim project on the right, countdown.
+// "project 4:59" (or the page when there are several), drawn dim and
+// right-aligned so it ends at xRight. Returns its width in pixels.
+int16_t dialogInfo(const ScreenModel &sc, int16_t xRight, int16_t y, int pages = 1) {
+    char info[48];
+    int32_t left = sc.expiresAt ? (int32_t)(sc.expiresAt - millis()) / 1000 : -1;
+    if (pages > 1) snprintf(info, sizeof(info), "(%d/%d)", sc.page + 1, pages);
+    else if (left >= 0) snprintf(info, sizeof(info), "%s %ld:%02ld", sc.project, (long)(left / 60), (long)(left % 60));
+    else snprintf(info, sizeof(info), "%s", sc.project);
+    int cells = utf8Length(info);
+    if (cells > 18) cells = 18;
+    fit(SMALL, xRight - cells * SMALL.cw, y, cells, info, T->dim);
+    return cells * SMALL.cw;
+}
+
+// Top line of a dialog: bold title, dim project and countdown on the right.
 void dialogTitle(const ScreenModel &sc, int16_t x, int16_t y, int cells, uint16_t c) {
-    char right[48] = "";
-    if (sc.expiresAt) {
-        int32_t left = (int32_t)(sc.expiresAt - millis()) / 1000;
-        if (left < 0) left = 0;
-        snprintf(right, sizeof(right), "%s %ld:%02ld", sc.project, (long)(left / 60), (long)(left % 60));
-    } else {
-        snprintf(right, sizeof(right), "%s", sc.project);
-    }
-    int rc = utf8Length(right);
-    if (rc > 18) rc = 18;
-    fit(SMALL, x + (cells - 0) * MONO.cw - rc * SMALL.cw, y + 3, rc, right, T->dim);
-    fit(MONO, x, y, cells - (rc * SMALL.cw) / MONO.cw - 1, sc.title, c, true);
+    int16_t w = dialogInfo(sc, x + cells * MONO.cw, y + 3);
+    fit(MONO, x, y, cells - w / MONO.cw - 1, sc.title, c, true);
 }
 
 void drawPrompt(Model &m) {
@@ -460,19 +460,12 @@ void drawList(Model &m) {
     int16_t x = X0 + 2, y = 3;
     int pages = (sc.nItems + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
 
-    // chip:  ☐ Database                         money-mind 4:59
+    // chip:  Database                            money-mind 4:59
     int16_t cw = (utf8Length(sc.title) + 2) * MONO.cw + 8;
     if (cw > 200) cw = 200;
     cv->fillRoundRect(x, y, cw, MONO.line + 2, 3, T->selBg);
     fit(MONO, x + 4, y + 1, (cw - 8) / MONO.cw, sc.title, c, true);
-    char right[48];
-    int32_t left = sc.expiresAt ? (int32_t)(sc.expiresAt - millis()) / 1000 : -1;
-    if (pages > 1) snprintf(right, sizeof(right), "(%d/%d)", sc.page + 1, pages);
-    else if (left >= 0) snprintf(right, sizeof(right), "%s %ld:%02ld", sc.project, (long)(left / 60), (long)(left % 60));
-    else snprintf(right, sizeof(right), "%s", sc.project);
-    int rc = utf8Length(right);
-    if (rc > 16) rc = 16;
-    fit(SMALL, 320 - X0 - rc * SMALL.cw, y + 4, rc, right, T->dim);
+    dialogInfo(sc, 320 - X0, y + 4, pages);
     y += MONO.line + 6;
 
     // question (up to 2 rows)
@@ -584,7 +577,7 @@ void uiRender(Model &m) {
     T = m.dark ? &DARK : &LIGHT;
     cv->fillScreen(T->bg);
     switch (m.mode) {
-        case Mode::Boot: drawBoot(m); break;
+        case Mode::Boot: drawBoot(); break;
         case Mode::Waiting: drawWaiting(m); break;
         case Mode::Status: drawStatus(m); break;
         case Mode::Screen:

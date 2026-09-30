@@ -192,10 +192,7 @@ func (a *Agent) permission(ctx context.Context, sid, cwd string, pids []int, too
 		title = "[" + clip(agentType, 12) + "] " + title
 	}
 	k := cfg.Keys
-	keys := proto.Keys{}.Set(k.Allow, "Allow", "allow", "ok").Set(k.Deny, "Deny", "deny", "danger")
-	if k.PC != k.Allow && k.PC != k.Deny {
-		keys.Set(k.PC, "PC", "pc", "dim")
-	}
+	keys := withPC(proto.Keys{}.Set(k.Allow, "Allow", "allow", "ok").Set(k.Deny, "Deny", "deny", "danger"), k.PC)
 	var decision string
 	err := a.Dialogs.Run(ctx, project, "permission", true, func(d *Dialog) error {
 		p, err := d.Show(ctx, proto.Screen{Tpl: "prompt", Tone: "warn", Title: title, Project: project,
@@ -274,11 +271,9 @@ func (a *Agent) stop(ctx context.Context, sid, cwd string, pids []int, last stri
 		k := cfg.Keys
 		keys := proto.Keys{}.Set(k.Continue, "Continue", "continue", "ok").Set(k.Done, "Done", "done", "dim")
 		if len(cfg.Shortcuts) > 0 {
-			keys.Set(k.Shortcuts, "Shortcut", "shortcuts", "accent")
+			keys.Set(k.Shortcuts, "Shortcut...", "shortcuts", "accent")
 		}
-		if k.PC != k.Continue && k.PC != k.Done && k.PC != k.Shortcuts {
-			keys.Set(k.PC, "PC", "pc", "dim")
-		}
+		withPC(keys, k.PC)
 		stopScreen := proto.Screen{Tpl: "prompt", Tone: "accent", Title: "Claude finished", Project: project,
 			Body: firstNonEmpty(last, "Claude finished its response."), Keys: keys, Click: "pc"}
 		for {

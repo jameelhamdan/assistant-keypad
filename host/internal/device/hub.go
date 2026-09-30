@@ -440,13 +440,13 @@ func (h *Hub) Provision(id, ssid, pass, name string) error {
 	return err
 }
 
-// Unpair wipes the keypad's Wi-Fi pairing (over USB if connected) and forgets its key.
+// Unpair tells a connected keypad to wipe its Wi-Fi pairing, then forgets it.
+// An offline keypad keeps its settings but no longer accepts this computer.
 func (h *Hub) Unpair(id string) error {
 	if c := h.Get(id); c != nil {
-		if c.Link.Kind() == "usb" {
-			_ = c.Send(proto.Simple{T: "unpair"})
-		} else {
-			c.Close()
+		_ = c.Send(proto.Simple{T: "unpair"})
+		if c.Link.Kind() == "wifi" {
+			time.AfterFunc(500*time.Millisecond, c.Close)
 		}
 	}
 	return h.store.Remove(id)

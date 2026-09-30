@@ -21,7 +21,20 @@ echo '{"session_id":"s1","cwd":"/tmp/demo","tool_name":"Bash","tool_input":{"com
   | dist/keypad hook PermissionRequest   # -> {"hookSpecificOutput":{"decision":{"behavior":"allow"},...}}
 ```
 
-## On the keypad
+## On the keypad, automated
+
+`tools/hw_regress.py` drives real hook calls through the agent and the Wi-Fi link to a keypad running the debug firmware, which lets the script press keys over USB. It covers:
+
+- permission allow, deny and hand to PC, and unbound keys being ignored
+- AskUserQuestion single choice, multi-select and paging past 8 options
+- Stop: continue, done, a shortcut, and back out of the shortcut menu
+- the status-screen shortcut menu being delivered on the next tool call
+
+See the script header for how to run it.
+
+Firmware update over the link: `keypad update <id> firmware/.pio/build/keypad/firmware.bin`.
+
+## On the keypad, by hand
 
 - [ ] Boot splash, then *Waiting for your computer*
 - [ ] Hold 1: key test. Every key 1–8 lights in the right place, the encoder counts both ways and its click registers. Hold 8 to leave.
