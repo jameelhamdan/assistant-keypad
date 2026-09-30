@@ -84,6 +84,10 @@ func (d *discovery) add(e *zeroconf.ServiceEntry) {
 	}
 	s.Addr = fmt.Sprintf("%s:%d", e.AddrIPv4[0], e.Port)
 	d.mu.Lock()
+	// Entries can arrive before their TXT record: keep what we learned earlier.
+	if prev, ok := d.seen[s.ID]; ok && len(e.Text) == 0 {
+		s.FW, s.Paired = prev.FW, prev.Paired
+	}
 	d.seen[s.ID] = s
 	d.mu.Unlock()
 }

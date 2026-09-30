@@ -2,8 +2,10 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,4 +286,12 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestSnapshotListsAreNeverNull(t *testing.T) {
+	e := setup(t, nil)
+	b, _ := json.Marshal(e.a.Snapshot())
+	if strings.Contains(string(b), "null") {
+		t.Fatalf("snapshot has null lists: %s", b)
+	}
 }

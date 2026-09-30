@@ -208,15 +208,24 @@ void battery(int16_t x, int16_t y, int pct) {   // 16x8
     cv->fillRect(x + 2, y + 2, (10 * pct + 50) / 100, 4, c);
 }
 
-void wifiBars(int16_t x, int16_t y, int rssi, bool live) {   // 11x9
-    int bars = rssi > -60 ? 3 : rssi > -72 ? 2 : 1;
+// Wi-Fi signal bars (11x9). Bright = connected (and the PC talks over it),
+// dim = connected but idle / joining, red = can't join.
+void wifiBars(int16_t x, int16_t y, const Model &m) {
+    int bars = m.wifi != WifiState::Up ? 3 : m.rssi > -60 ? 3 : m.rssi > -72 ? 2 : 1;
+    uint16_t on = m.wifi == WifiState::Failed ? T->error
+                  : m.wifi == WifiState::Up   ? (m.wifiHost ? T->text : T->dim)
+                                              : T->faint;
     for (int i = 0; i < 3; i++) {
         int h = 3 + i * 3;
-        cv->fillRect(x + i * 4, y + 9 - h, 3, h, i < bars && live ? T->dim : T->faint);
+        cv->fillRect(x + i * 4, y + 9 - h, 3, h, i < bars ? on : T->faint);
+    }
+    if (m.wifi == WifiState::Failed) {   // small x over the bars
+        cv->drawLine(x + 1, y, x + 5, y + 4, T->error);
+        cv->drawLine(x + 5, y, x + 1, y + 4, T->error);
     }
 }
 
-// Right-aligned connection/battery indicators; returns the x where they start.
+// Right-aligned indicators: [usb] [wifi bars] [battery]. Returns the x where they start.
 int16_t indicators(const Model &m, int16_t y) {
     int16_t x = 320 - X0;
     if (m.battery >= 0) {
@@ -224,14 +233,17 @@ int16_t indicators(const Model &m, int16_t y) {
         battery(x, y + 4, m.battery);
         x -= 6;
     }
-    if (m.usbHost || (!m.wifiHost && m.wifi != WifiState::Up)) {
-        x -= 3 * SMALL.cw;
-        text(SMALL, x, y + 2, "usb", m.usbHost ? T->dim : T->faint);
-    } else {
+    if (m.wifi != WifiState::Off) {
         x -= 11;
-        wifiBars(x, y + 3, m.rssi, m.wifiHost);
+        wifiBars(x, y + 3, m);
+        x -= 6;
     }
-    return x - 6;
+    if (m.usbHost || m.wifi == WifiState::Off) {
+        x -= 3 * SMALL.cw;
+        text(SMALL, x, y + 2, "usb", m.usbHost ? T->text : T->faint);
+        x -= 6;
+    }
+    return x;
 }
 
 void fmtElapsed(char *out, size_t n, uint32_t ms) {

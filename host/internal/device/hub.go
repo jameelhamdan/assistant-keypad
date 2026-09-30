@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -140,8 +141,12 @@ func (h *Hub) Run(ctx context.Context) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	lastDial := map[string]time.Time{}
+	noUSB := os.Getenv("KEYPAD_NO_USB") == "1" // development: force the Wi-Fi path
 	for {
 		for _, port := range usbPorts() {
+			if noUSB {
+				break
+			}
 			if h.claim("usb:" + port) {
 				go h.serveUSB(port)
 			}
