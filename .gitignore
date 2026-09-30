@@ -1,0 +1,8 @@
+# build output
+/dist/
+firmware/.pio/
+firmware/.vscode/
+host/internal/firmware/bin/*.bin
+# local
+.DS_Store
+*.log
