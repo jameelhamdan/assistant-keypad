@@ -32,5 +32,5 @@ private:
 // Decodes exactly n bytes from 2n hex characters.
 bool hexDecode(const char *hex, uint8_t *out, size_t n);
 
-// Checks the implementation against the vector in host/internal/secure/secure_test.go.
+// Checks the implementation against the vector in host/tests/test_secure.py.
 bool cryptoSelfTest();

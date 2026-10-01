@@ -1,30 +1,38 @@
 #!/bin/sh
-# Builds dist/Keypad.app (universal) and dist/Keypad-<version>.dmg.
+# Builds dist/Keypad.app and dist/Keypad-<version>.dmg (PyInstaller, one folder).
 # Signing: set CODESIGN_ID="Developer ID Application: ..." to sign for
 # distribution (then notarize the DMG with `xcrun notarytool`). Without it
 # the app is ad-hoc signed, which is fine on the machine that built it.
+# KEYPAD_ARCH=universal2 builds for Intel and Apple Silicon (needs a universal2 Python).
 set -eu
 cd "$(dirname "$0")/../.."
 VERSION=${VERSION:-dev}
-APP=dist/Keypad.app
-rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+PY=host/.venv/bin/python
+WORK=$(mktemp -d)
 
-for arch in arm64 amd64; do
-  (cd host && CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "${LDFLAGS:-}" -o "../dist/keypad-$arch" ./cmd/keypad)
-done
-lipo -create -output "$APP/Contents/MacOS/keypad" dist/keypad-arm64 dist/keypad-amd64
-rm dist/keypad-arm64 dist/keypad-amd64
+$PY packaging/mkicon.py "$WORK/Keypad.iconset"
+iconutil -c icns -o "$WORK/Keypad.icns" "$WORK/Keypad.iconset"
 
-sed "s/__VERSION__/${VERSION#v}/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
-[ -f packaging/macos/Keypad.icns ] && cp packaging/macos/Keypad.icns "$APP/Contents/Resources/"
+printf '%s\n' "${VERSION#v}" > host/keypad/data/version
+trap 'rm -f host/keypad/data/version; rm -rf "$WORK"' EXIT
 
-codesign --force --options runtime --timestamp=none --sign "${CODESIGN_ID:--}" "$APP"
+# PyInstaller writes into a scratch folder: its "Keypad" output folder would
+# otherwise collide with anything named "keypad" in dist/ (macOS ignores case).
+KEYPAD_VERSION=$VERSION KEYPAD_ICON="$WORK/Keypad.icns" $PY -m PyInstaller --noconfirm --clean \
+  --distpath "$WORK/dist" --workpath "$WORK/build" packaging/keypad.spec
+mkdir -p dist
+rm -rf dist/Keypad.app
+mv "$WORK/dist/Keypad.app" dist/
+if [ -n "${CODESIGN_ID:-}" ]; then
+  # Hardened runtime needs one Team ID across the app and its libraries: sign everything with it.
+  codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_ID" dist/Keypad.app
+fi  # otherwise PyInstaller's ad-hoc signature stands (fine on the machine that built it)
 
 DMG="dist/Keypad-${VERSION}.dmg"
 rm -f "$DMG"
-STAGE=$(mktemp -d)
-cp -R "$APP" "$STAGE/"
+STAGE="$WORK/dmg"
+mkdir -p "$STAGE"
+cp -R dist/Keypad.app "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -quiet -volname Keypad -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-rm -rf "$STAGE"
-echo "built $APP and $DMG"
+echo "built dist/Keypad.app and $DMG"

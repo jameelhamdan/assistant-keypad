@@ -1,8 +1,14 @@
 # build output
 /dist/
+/build/
 firmware/.pio/
 firmware/.vscode/
-host/internal/firmware/bin/*.bin
+# Python
+host/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
 # local
 .DS_Store
 *.log

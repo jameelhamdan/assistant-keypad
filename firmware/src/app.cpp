@@ -12,6 +12,7 @@
 #include "input.h"
 #include "link.h"
 #include "model.h"
+#include "mem.h"
 #include "ota.h"
 #include "store.h"
 #include "text/text.h"
@@ -30,14 +31,31 @@ struct LinkState {
 };
 LinkState links[2];
 Src hostSrc = Src::Usb;  // link that last completed a hello
+Src screenSrc = Src::Usb;  // link the current screen came from: its answer goes back there
 
 char lastAnswered[49] = "";
 char cachedPress[256] = "";
 size_t cachedLen = 0;
 uint32_t bootAt = 0;
 uint32_t lastBattery = 0;
+uint32_t logHash = 0;   // of the transcript last applied
 
 void markDirty() { dirty = true; }
+
+void wake() {
+    model.lastActivity = millis();
+    if (model.dimmed) {
+        model.dimmed = false;
+        markDirty();
+    }
+}
+
+// A key or knob turn: true if it only woke a dim screen (then it does nothing else).
+bool wakeOnly() {
+    bool was = model.dimmed;
+    wake();
+    return was;
+}
 
 // ---- sending ----------------------------------------------------------------------
 
@@ -100,6 +118,13 @@ void sendWifiReport() {
     sendHost(d);
 }
 
+// The reply to a screen goes to the host that showed it (USB and Wi-Fi can
+// be different computers); if that link is gone, to any live host.
+void sendAnswer(JsonDocument &doc) {
+    if (links[(int)screenSrc].acked) sendTo(screenSrc, doc);
+    else sendHost(doc);
+}
+
 void sendOta(Src src, int off, bool haveOk, bool ok, const char *err) {
     JsonDocument d;
     d["t"] = "ota";
@@ -126,19 +151,6 @@ Tone toneOf(const char *s) {
     return Tone::Accent;
 }
 
-void parseKeys(JsonObjectConst obj, KeyBind *keys) {
-    for (int k = 0; k < 9; k++) keys[k].set = false;
-    for (JsonPairConst kv : obj) {
-        int k = atoi(kv.key().c_str());
-        if (k < 1 || k > 8) continue;
-        JsonObjectConst v = kv.value().as<JsonObjectConst>();
-        keys[k].set = true;
-        copyText(keys[k].label, sizeof(keys[k].label), v["label"] | "");
-        strlcpy(keys[k].act, v["act"] | "", sizeof(keys[k].act));
-        keys[k].tone = toneOf(v["tone"]);
-    }
-}
-
 // ---- host messages ---------------------------------------------------------------------------
 
 void applySettings(JsonDocument &doc) {
@@ -158,6 +170,8 @@ void applySettings(JsonDocument &doc) {
 
 void applyStatus(JsonDocument &doc) {
     StatusModel &st = model.status;
+    char prevSel[sizeof(st.sel)];
+    strlcpy(prevSel, st.sel, sizeof(prevSel));
     st.n = 0;
     uint32_t now = millis();
     for (JsonObjectConst s : doc["sessions"].as<JsonArrayConst>()) {
@@ -165,47 +179,75 @@ void applyStatus(JsonDocument &doc) {
         SessionInfo &x = st.s[st.n++];
         strlcpy(x.id, s["id"] | "", sizeof(x.id));
         copyText(x.project, sizeof(x.project), s["project"] | "");
+        copyText(x.name, sizeof(x.name), s["name"] | "");
         strlcpy(x.state, s["state"] | "", sizeof(x.state));
         copyText(x.title, sizeof(x.title), s["title"] | "");
         copyText(x.detail, sizeof(x.detail), s["detail"] | "");
+        strlcpy(x.mode, s["mode"] | "", sizeof(x.mode));
         x.startedAt = now - (uint32_t)(s["since"] | 0) * 1000u;
     }
     strlcpy(st.sel, doc["sel"] | "", sizeof(st.sel));
     st.pinned = doc["pinned"] | false;
     st.queue = doc["queue"] | 0;
     st.paused = doc["paused"] | false;
-    parseKeys(doc["keys"].as<JsonObjectConst>(), st.keys);
+    st.menu = doc["menu"] | false;
+    // the transcript: each entry's text goes into the pool, NUL-terminated.
+    // Status arrives several times a second while Claude works; the renderer
+    // re-wraps only when the transcript actually changed (FNV-1a over it).
+    st.nLog = 0;
+    size_t used = 0;
+    uint32_t hash = 2166136261u;
+    for (JsonObjectConst l : doc["log"].as<JsonArrayConst>()) {
+        if (st.nLog >= MAX_LOG || !st.logText || used + 1 >= LOG_POOL) break;
+        LogEntry &e = st.log[st.nLog++];
+        const char *k = l["k"] | "c";
+        e.k = k[0];
+        e.off = (uint16_t)used;
+        copyText(st.logText + used, LOG_POOL - used, l["t"] | "");
+        size_t n = strlen(st.logText + used) + 1;
+        hash = (hash ^ (uint8_t)e.k) * 16777619u;
+        for (size_t i = 0; i < n; i++) hash = (hash ^ (uint8_t)st.logText[used + i]) * 16777619u;
+        used += n;
+    }
+    if (hash != logHash) st.logVer++;
+    logHash = hash;
     model.view = 0;
     for (uint8_t i = 0; i < st.n; i++) if (!strcmp(st.s[i].id, st.sel)) model.view = i;
+    if (strcmp(prevSel, st.sel) != 0) model.logScroll = 0;   // another session: start at its newest line
+    if (model.pick > st.n) model.pick = st.n;
 }
 
 void showScreen(JsonDocument &doc) {
     ScreenModel &sc = model.screen;
-    const char *tpl = doc["tpl"] | "prompt";
-    sc.tpl = !strcmp(tpl, "list") ? Tpl::List : !strcmp(tpl, "multi") ? Tpl::Multi : Tpl::Prompt;
+    const char *tpl = doc["tpl"] | "select";
+    sc.tpl = !strcmp(tpl, "multi") ? Tpl::Multi : !strcmp(tpl, "prompt") ? Tpl::Prompt : Tpl::Select;
     strlcpy(sc.id, doc["id"] | "", sizeof(sc.id));
     sc.tone = toneOf(doc["tone"]);
     copyText(sc.title, sizeof(sc.title), doc["title"] | "");
     copyText(sc.project, sizeof(sc.project), doc["project"] | "");
     copyText(sc.body, sizeof(sc.body), doc["body"] | "");
+    copyText(sc.q, sizeof(sc.q), doc["q"] | "");
+    sc.diff = doc["diff"] | false;
     sc.nItems = 0;
+    JsonArrayConst notes = doc["notes"].as<JsonArrayConst>();
     for (const char *it : doc["items"].as<JsonArrayConst>()) {
         if (sc.nItems >= MAX_ITEMS) break;
         copyText(sc.items[sc.nItems], sizeof(sc.items[0]), it);
+        copyText(sc.notes[sc.nItems], sizeof(sc.notes[0]), notes[sc.nItems] | "");
         sc.picked[sc.nItems++] = false;
     }
-    if (sc.tpl == Tpl::Multi && sc.nItems > 7) sc.nItems = 7;
-    parseKeys(doc["keys"].as<JsonObjectConst>(), sc.keys);
-    strlcpy(sc.click, doc["click"] | "", sizeof(sc.click));
+    strlcpy(sc.esc, doc["esc"] | "", sizeof(sc.esc));
     sc.shownAt = millis();
     int timeout = doc["timeout"] | 0;
     sc.expiresAt = timeout > 0 ? sc.shownAt + (uint32_t)timeout * 1000u : 0;
-    sc.page = 0;
+    sc.cursor = 0;   // like Claude Code: the first option is highlighted
+    sc.top = 0;
     sc.scroll = 0;
     sc.maxScroll = 0;
     sc.active = true;
     model.sentUntil = 0;
     model.mode = Mode::Screen;
+    wake();   // a request: full brightness, so it catches your eye
 }
 
 void applyWifiConfig() { strlcpy(model.ssid, stored.ssid, sizeof(model.ssid)); }
@@ -255,6 +297,9 @@ void unpair() {
 
 void onKey(const KeyEvent &ev);
 
+// Where to go when an update ends or fails: back to a pending screen if any.
+Mode afterOta() { return model.screen.active ? Mode::Screen : Mode::Status; }
+
 void onMessage(char *json, size_t len, Src src) {
     JsonDocument doc;
     if (deserializeJson(doc, json, len)) return;
@@ -281,6 +326,7 @@ void onMessage(char *json, size_t len, Src src) {
         if (!L.acked) sendHello(src);
         JsonDocument p;
         p["t"] = "pong";
+        p["bat"] = model.battery;   // -1 = unknown / on USB power
         sendTo(src, p);
         return;
     }
@@ -324,6 +370,7 @@ void onMessage(char *json, size_t len, Src src) {
             if (cachedLen) linkSend(src, cachedPress, cachedLen);   // our answer was lost: repeat it
         } else if (id[0] && !(model.screen.active && !strcmp(id, model.screen.id))) {
             showScreen(doc);
+            screenSrc = src;
         }
     } else if (!strcmp(t, "close")) {
         const char *id = doc["id"] | "";
@@ -339,7 +386,7 @@ void onMessage(char *json, size_t len, Src src) {
     } else if (!strcmp(t, "ota_begin")) {
         const char *err = nullptr;
         bool ok = otaBegin(doc["size"] | 0, doc["md5"] | "", &err);
-        model.mode = ok ? Mode::Ota : Mode::Status;
+        model.mode = ok ? Mode::Ota : afterOta();
         model.otaPct = 0;
         sendOta(src, 0, !ok, ok, err);
     } else if (!strcmp(t, "ota_data")) {
@@ -348,7 +395,7 @@ void onMessage(char *json, size_t len, Src src) {
         bool ok = off >= 0 && otaWrite((size_t)off, doc["d"] | "", &err);
         model.otaPct = otaPercent();
         sendOta(src, off, !ok, ok, err);
-        if (!ok) model.mode = Mode::Status;
+        if (!ok) model.mode = afterOta();
     } else if (!strcmp(t, "ota_end")) {
         const char *err = nullptr;
         bool ok = otaFinish(&err);
@@ -358,7 +405,7 @@ void onMessage(char *json, size_t len, Src src) {
             delay(300);
             ESP.restart();
         }
-        model.mode = Mode::Status;
+        model.mode = afterOta();
     }
     markDirty();
 }
@@ -373,29 +420,18 @@ void answer(uint8_t key, const char *act, int idx, const char *label) {
     d["key"] = key;
     d["act"] = act;
     if (idx >= 0) d["idx"] = idx;
-    if (!strcmp(act, "confirm")) {
+    if (!strcmp(act, "submit")) {
         JsonArray sel = d["sel"].to<JsonArray>();
         for (uint8_t i = 0; i < sc.nItems; i++) if (sc.picked[i]) sel.add(i);
     }
     cachedLen = serializeJson(d, cachedPress, sizeof(cachedPress));
     if (cachedLen >= sizeof(cachedPress)) cachedLen = 0;
     strlcpy(lastAnswered, sc.id, sizeof(lastAnswered));
-    sendHost(d);
+    sendAnswer(d);
     sc.active = false;   // locked: further presses do nothing until the host moves on
     strlcpy(model.sent, label, sizeof(model.sent));
     model.sentUntil = millis() + SENT_MS;
     model.mode = Mode::Status;
-}
-
-void sendStatusPress(uint8_t key) {
-    const KeyBind &kb = model.status.keys[key];
-    if (!kb.set) return;
-    JsonDocument d;
-    d["t"] = "press";
-    d["id"] = "status";
-    d["key"] = key;
-    d["act"] = kb.act;
-    sendHost(d);
 }
 
 void sendSession(const char *act, const char *sid) {
@@ -423,6 +459,127 @@ void debugLog(const char *fmt, ...) {
 #endif
 }
 
+int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+// ---- dialogs: cursor, Enter, number keys, Esc ----
+
+int lastRow(const ScreenModel &sc) { return sc.tpl == Tpl::Multi ? sc.nItems : sc.nItems - 1; }   // multi: + Submit
+
+// Up/down. Above the first option the text takes focus and scrolls (a long
+// command, or Claude's message on the prompt screen, can be read in full);
+// past its end the options take focus again. `scroll` counts lines from the
+// top; the prompt screen's transcript starts at its end, like the terminal.
+void screenMove(int d) {
+    ScreenModel &sc = model.screen;
+    if (sc.cursor < 0) {
+        int s = sc.scroll + d;
+        if (s > sc.maxScroll) sc.cursor = 0;
+        else sc.scroll = (int16_t)(s < 0 ? 0 : s);
+        return;
+    }
+    int c = sc.cursor + d;
+    if (c < 0) {
+        c = sc.maxScroll > 0 ? -1 : 0;
+        if (c < 0 && sc.tpl == Tpl::Prompt) sc.scroll = sc.maxScroll - 1;   // one line up from the end
+    }
+    sc.cursor = (int8_t)clampInt(c, -1, lastRow(sc));
+}
+
+void togglePick(ScreenModel &sc, int idx) {
+    if (idx >= 0 && idx < sc.nItems) sc.picked[idx] = !sc.picked[idx];
+}
+
+void submitMulti(uint8_t key) {
+    ScreenModel &sc = model.screen;
+    bool any = false;
+    for (uint8_t i = 0; i < sc.nItems; i++) any |= sc.picked[i];
+    if (any) answer(key, "submit", -1, "Submitted");
+    else appToast("Pick at least one", Tone::Warn, 1500);
+}
+
+void screenEnter(uint8_t key) {
+    ScreenModel &sc = model.screen;
+    if (sc.cursor < 0) {   // reading the body: Enter goes back to the options, never decides
+        sc.cursor = 0;
+        return;
+    }
+    if (sc.tpl == Tpl::Multi) {
+        if (sc.cursor >= sc.nItems) submitMulti(key);
+        else togglePick(sc, sc.cursor);
+        return;
+    }
+    if (sc.cursor < sc.nItems) answer(key, "pick", sc.cursor, sc.items[sc.cursor]);
+}
+
+void screenKey(uint8_t key) {
+    ScreenModel &sc = model.screen;
+    if (key == KEY_ENTER) {
+        screenEnter(key);
+    } else if (key == KEY_ESC || key == KEY_ENC) {
+        if (sc.esc[0]) answer(key, sc.esc, -1, !strcmp(sc.esc, "pc") ? "On the PC" : "Back");
+    } else if (key == KEY_UP || key == KEY_DOWN) {
+        screenMove(key == KEY_UP ? -1 : 1);
+    } else if (key >= 1 && key <= DIRECT_PICKS) {   // number keys pick at once, like Claude Code
+        int idx = key - 1;
+        if (idx >= sc.nItems) return;
+        sc.cursor = (int8_t)idx;
+        if (sc.tpl == Tpl::Multi) togglePick(sc, idx);
+        else answer(key, "pick", idx, sc.items[idx]);
+    }
+}
+
+// ---- the status screen and the session picker ----
+
+void openSessions() {
+    model.pick = model.status.pinned ? model.view + 1 : 0;
+    model.mode = Mode::Sessions;
+}
+
+void chooseSession(int row) {   // 0 = follow latest, 1..n = that session
+    StatusModel &st = model.status;
+    if (row < 0 || row > st.n) return;
+    if (row == 0) {
+        sendSession("follow", nullptr);
+    } else {
+        model.view = (int8_t)(row - 1);
+        st.nLog = 0;   // that transcript belonged to the previous session; the host sends the new one
+        st.logVer++;
+        logHash = 0;   // whatever arrives next is new to the screen
+        sendSession("select", st.s[row - 1].id);
+    }
+    model.logScroll = 0;
+    model.mode = Mode::Status;
+}
+
+void sendMenu(uint8_t key) {
+    JsonDocument d;
+    d["t"] = "press";
+    d["id"] = "status";
+    d["key"] = key;
+    d["act"] = "menu";
+    sendHost(d);
+}
+
+void statusKey(uint8_t key) {
+    if (key == KEY_SESSIONS) {
+        openSessions();
+    } else if (key == KEY_UP || key == KEY_DOWN) {
+        model.logScroll = (int16_t)clampInt(model.logScroll + (key == KEY_UP ? 1 : -1), 0, model.logMax);
+    } else if (key == KEY_ESC || key == KEY_ENC) {   // back to live: the newest line of the latest activity
+        model.logScroll = 0;
+        if (model.status.pinned) sendSession("follow", nullptr);
+    } else if (key == KEY_ENTER && model.status.menu) {
+        sendMenu(key);
+    }
+}
+
+void sessionsKey(uint8_t key) {
+    if (key == KEY_SESSIONS || key == KEY_ESC || key == KEY_ENC) model.mode = Mode::Status;
+    else if (key == KEY_UP || key == KEY_DOWN) model.pick = (int8_t)clampInt(model.pick + (key == KEY_UP ? -1 : 1), 0, model.status.n);
+    else if (key == KEY_ENTER) chooseSession(model.pick);
+    else if (key >= 1 && key <= DIRECT_PICKS && key <= model.status.n) chooseSession(key);
+}
+
 void onKey(const KeyEvent &ev) {
     debugLog("key %u action %u clean %d mode %u active %d age %ld acked %d/%d", ev.key, (unsigned)ev.action, ev.clean,
              (unsigned)model.mode, model.screen.active, (long)(ev.pressedAt - model.screen.shownAt), links[0].acked,
@@ -433,67 +590,31 @@ void onKey(const KeyEvent &ev) {
         else if (ev.action == KeyAction::Release) model.testKeys &= ~bit;
         return;
     }
-    if (ev.action != KeyAction::Press) return;
+    if (ev.action != KeyAction::Press || !ev.clean) return;   // one key at a time (the matrix has no diodes)
+    if (wakeOnly()) return;   // the first press on a dim screen only wakes it
     if (model.mode == Mode::Screen && model.screen.active) {
-        ScreenModel &sc = model.screen;
-        // Safety: one key at a time, and never a press that began before the screen.
-        if (!ev.clean || ev.pressedAt < sc.shownAt + STALE_PRESS_MS) return;
-        if (ev.key == KEY_ENC) {
-            if (sc.click[0]) answer(0, sc.click, -1, !strcmp(sc.click, "pc") ? "On the PC" : "Back");
-            return;
-        }
-        switch (sc.tpl) {
-            case Tpl::Prompt:
-                if (sc.keys[ev.key].set) answer(ev.key, sc.keys[ev.key].act, -1, sc.keys[ev.key].label);
-                break;
-            case Tpl::List: {
-                int idx = sc.page * ITEMS_PER_PAGE + ev.key - 1;
-                if (idx < sc.nItems) answer(ev.key, "item", idx, sc.items[idx]);
-                break;
-            }
-            case Tpl::Multi:
-                if (ev.key == 8) {
-                    bool any = false;
-                    for (uint8_t i = 0; i < sc.nItems; i++) any |= sc.picked[i];
-                    if (any) answer(8, "confirm", -1, "Sent");
-                    else appToast("Pick at least one", Tone::Warn, 1500);
-                } else if (ev.key - 1 < sc.nItems) {
-                    sc.picked[ev.key - 1] = !sc.picked[ev.key - 1];
-                }
-                break;
-        }
-        return;
-    }
-    if (model.mode == Mode::Status) {
-        if (!ev.clean) return;
-        if (ev.key == KEY_ENC) {
-            if (model.status.pinned) sendSession("follow", nullptr);
-        } else {
-            sendStatusPress(ev.key);
-        }
+        // Safety: never a press that began before the screen appeared.
+        if (ev.pressedAt < model.screen.shownAt + STALE_PRESS_MS) return;
+        screenKey(ev.key);
+    } else if (model.mode == Mode::Status) {
+        statusKey(ev.key);
+    } else if (model.mode == Mode::Sessions) {
+        sessionsKey(ev.key);
     }
 }
 
+// The encoder turns like 4 (up) and 8 (down), one step per detent.
 void onEncoder(int32_t steps) {
     if (model.mode == Mode::Test) {
         model.testEncoder += steps;
         return;
     }
-    if (model.mode == Mode::Screen && model.screen.active) {
-        ScreenModel &sc = model.screen;
-        if (sc.tpl == Tpl::List) {
-            int pages = (sc.nItems + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-            if (pages > 1) sc.page = (uint8_t)((sc.page + steps % pages + pages) % pages);
-        } else {
-            int s = sc.scroll + steps;
-            sc.scroll = (int16_t)(s < 0 ? 0 : s > sc.maxScroll ? sc.maxScroll : s);
-        }
-        return;
-    }
-    if (model.mode == Mode::Status && model.status.n > 1) {
-        int n = model.status.n;
-        model.view = (int8_t)(((model.view + steps) % n + n) % n);
-        sendSession("select", model.status.s[model.view].id);
+    if (wakeOnly()) return;
+    uint8_t key = steps < 0 ? KEY_UP : KEY_DOWN;
+    for (int32_t i = steps < 0 ? -steps : steps; i > 0; i--) {
+        if (model.mode == Mode::Screen && model.screen.active) screenKey(key);
+        else if (model.mode == Mode::Status) statusKey(key);
+        else if (model.mode == Mode::Sessions) sessionsKey(key);
     }
 }
 
@@ -526,12 +647,13 @@ void tick() {
     if (!links[1].acked && linkNetAuthed() && now - links[1].lastHello > HELLO_EVERY_MS) sendHello(Src::Net);
 
     if (model.mode == Mode::Boot && now - bootAt > 1200) model.mode = connected ? Mode::Status : Mode::Waiting;
-    if (!connected && (model.mode == Mode::Status || model.mode == Mode::Screen)) {
-        model.mode = Mode::Waiting;
+    if (!connected && (model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Screen ||
+                       model.mode == Mode::Ota)) {
+        model.mode = Mode::Waiting;   // includes an update whose host went away
         model.screen.active = false;
         otaAbort();
     }
-    if (model.mode == Mode::Ota && !otaRunning()) model.mode = connected ? Mode::Status : Mode::Waiting;
+    if (model.mode == Mode::Ota && !otaRunning()) model.mode = connected ? afterOta() : Mode::Waiting;
     if (model.mode == Mode::Screen && model.screen.expiresAt && (int32_t)(now - model.screen.expiresAt) > 0) {
         model.screen.active = false;
         model.mode = Mode::Status;
@@ -545,6 +667,14 @@ void tick() {
         model.testEncoder = 0;
     } else if (model.mode == Mode::Test && inputHeld(8, TEST_EXIT_MS)) {
         model.mode = connected ? Mode::Status : Mode::Waiting;
+    }
+
+    // Idle: dim the backlight (never with a request on screen, an update or the key test).
+    bool canDim = model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Waiting;
+    bool dim = canDim && now - model.lastActivity > DIM_AFTER_MS;
+    if (dim != model.dimmed) {
+        model.dimmed = dim;
+        markDirty();
     }
 
     WifiStatus w = linkWifi();
@@ -564,6 +694,7 @@ void tick() {
 }  // namespace
 
 void appToast(const char *text, Tone tone, uint32_t ms) {
+    wake();
     copyText(model.toast, sizeof(model.toast), text);
     model.toastTone = tone;
     model.toastUntil = millis() + ms;
@@ -582,6 +713,7 @@ void appBegin() {
     model.brightness = stored.brightness;
     model.paired = stored.paired;
     model.battery = -1;
+    model.status.logText = (char *)bigAlloc(LOG_POOL);
     copyText(model.name, sizeof(model.name), stored.name);
     applyWifiConfig();
     linkBegin(onMessage, model.id);

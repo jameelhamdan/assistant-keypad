@@ -1,5 +1,5 @@
 ; Keypad for Windows - per-user installer (no administrator rights).
-; Build: make windows && iscc /DVersion=1.0.0 packaging\windows\keypad.iss
+; Build: packaging\windows\build.ps1 -Version 1.0.0  (runs PyInstaller, then this script)
 
 #ifndef Version
   #define Version "dev"
@@ -23,17 +23,18 @@ UninstallDisplayIcon={app}\keypadw.exe
 CloseApplications=yes
 
 [Files]
-Source: "..\..\dist\windows\keypad.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\dist\windows\keypadw.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\Keypad\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; files from an older build that the new one no longer has
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Icons]
 Name: "{group}\Keypad"; Filename: "{app}\keypadw.exe"; Parameters: "tray"
-Name: "{group}\Keypad Settings"; Filename: "{app}\keypadw.exe"; Parameters: "settings"
 
 [Run]
 ; Stop an older agent, then register hooks + MCP and start at login (starts agent and tray now).
 Filename: "{app}\keypad.exe"; Parameters: "install"; Flags: runhidden waituntilterminated; StatusMsg: "Connecting Claude Code..."
-Filename: "{app}\keypadw.exe"; Parameters: "settings"; Description: "Open Keypad settings"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "{app}\keypad.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "KeypadUninstall"

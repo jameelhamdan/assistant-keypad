@@ -59,6 +59,12 @@ void test_sanitize(void) {
 }
 
 // Cases from the original project's Arabic tests.
+void test_sanitize_keeps_style_markers(void) {
+    char s[] = "\x01Title\x01 and \x02code\x02\tend";
+    textSanitize(s);
+    TEST_ASSERT_EQUAL_STRING("\x01Title\x01 and \x02code\x02 end", s);
+}
+
 void test_arabic_shaping(void) {
     char out[128];
     // "نعم" (yes): isolated -> initial noon, medial ain, final meem, reversed for display
@@ -85,6 +91,7 @@ int main(int, char **) {
     RUN_TEST(test_wrap_paragraphs_and_long_words);
     RUN_TEST(test_wrap_max_lines);
     RUN_TEST(test_sanitize);
+    RUN_TEST(test_sanitize_keeps_style_markers);
     RUN_TEST(test_arabic_shaping);
     RUN_TEST(test_bidi_keeps_latin_runs);
     return UNITY_END();
