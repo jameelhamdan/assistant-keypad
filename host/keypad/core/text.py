@@ -1,0 +1,232 @@
+"""Text helpers: redaction, clipping and one-line tool summaries."""
+
+from __future__ import annotations
+
+import difflib
+import os
+import re
+from typing import Any
+
+_SECRET = re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd|authorization|bearer)(\s*[=:]\s*)\S+")
+_TOKEN = re.compile(
+    r"\b(sk-[A-Za-z0-9_\-]{12,}|ghp_[A-Za-z0-9]{20,}|gh[ousr]_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9\-]{10,}|AKIA[0-9A-Z]{16})\b"
+)
+_URL = re.compile(r"^https?://")
+
+
+def redact(s: str) -> str:
+    """Hides obvious secrets before text reaches a screen or a log."""
+    s = _SECRET.sub(r"\1\2***", s)
+    return _TOKEN.sub("***", s)
+
+
+def clip(s: str, n: int) -> str:
+    """Shortens s to n characters, marking the cut with an ellipsis."""
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def first_line(s: str) -> str:
+    s = s.strip()
+    return s.split("\n", 1)[0].strip()
+
+
+def base(p: str) -> str:
+    p = p.replace("\\", "/").rstrip("/")
+    return p.rsplit("/", 1)[-1]
+
+
+def project_of(cwd: str) -> str:
+    return base(os.path.normpath(cwd)) if cwd else ""
+
+
+def s(m: Any, k: str) -> str:
+    """m[k] if it is a string, else ""."""
+    v = m.get(k) if isinstance(m, dict) else None
+    return v if isinstance(v, str) else ""
+
+
+def tool_name(name: str) -> str:
+    """Shortens MCP tool names: mcp__server__tool -> server:tool."""
+    p = name.split("__")
+    if len(p) >= 3 and p[0] == "mcp":
+        return p[1] + ":" + p[2]
+    return name
+
+
+def tool_verb(name: str) -> str:
+    """The status title while a tool runs."""
+    return {
+        "Edit": "Editing", "Write": "Editing", "NotebookEdit": "Editing", "MultiEdit": "Editing",
+        "Read": "Reading", "Glob": "Reading", "Grep": "Reading",
+        "Bash": "Running", "PowerShell": "Running",
+        "WebFetch": "Fetching", "WebSearch": "Fetching",
+        "Agent": "Delegating", "Task": "Delegating",
+    }.get(name, "Using " + tool_name(name))
+
+
+def summarize(name: str, inp: dict[str, Any]) -> str:
+    """One short line describing a tool call."""
+    if name in ("Bash", "PowerShell"):
+        t = first_line(s(inp, "command")) or s(inp, "description")
+    elif name in ("Edit", "Write", "Read", "NotebookEdit", "MultiEdit"):
+        t = base(s(inp, "file_path") + s(inp, "notebook_path"))
+    elif name in ("Glob", "Grep"):
+        t = s(inp, "pattern")
+    elif name in ("WebFetch", "WebSearch"):
+        t = _URL.sub("", s(inp, "url") + s(inp, "query"))
+    elif name in ("Agent", "Task"):
+        t = s(inp, "description")
+    elif name == "ExitPlanMode":
+        t = "Plan ready for approval"
+    else:
+        t = next((v for k in ("description", "command", "file_path", "pattern", "query", "prompt", "title", "url")
+                  if (v := s(inp, k))), "")
+    return clip(redact(first_line(t)), 80)
+
+
+def diff_lines(old: str, new: str) -> list[str]:
+    """A compact line diff: "- old", "+ new", one line of context, "..." between hunks."""
+    out: list[str] = []
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=1):
+        if line.startswith(("---", "+++")):
+            continue
+        if line.startswith("@@"):
+            if out:
+                out.append("...")
+            continue
+        out.append(line[0] + " " + line[1:] if line[:1] in ("+", "-") else "  " + line[1:])
+    return out
+
+
+def change(name: str, inp: dict[str, Any]) -> list[str]:
+    """What an Edit / MultiEdit / Write / NotebookEdit changes, as diff lines."""
+    if name == "Edit":
+        return diff_lines(s(inp, "old_string"), s(inp, "new_string"))
+    if name == "MultiEdit":
+        out: list[str] = []
+        for e in inp.get("edits") or []:
+            if isinstance(e, dict):
+                out += (["..."] if out else []) + diff_lines(s(e, "old_string"), s(e, "new_string"))
+        return out
+    new = s(inp, "content") or s(inp, "new_source")
+    return ["+ " + line for line in new.splitlines()[:80]]
+
+
+def details(name: str, inp: dict[str, Any]) -> str:
+    """The longer permission-screen text."""
+    if name in ("Bash", "PowerShell"):
+        t = s(inp, "command")
+        if d := s(inp, "description"):
+            t = d + "\n" + t
+    elif name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        t = "\n".join([s(inp, "file_path") + s(inp, "notebook_path"), *change(name, inp)])
+    elif name == "Read":
+        t = s(inp, "file_path")
+    elif name == "ExitPlanMode":
+        t = s(inp, "plan")
+    else:
+        t = summarize(name, inp)
+    return clip(redact(t.replace("\r", "")), 1390)  # the whole command, up to the keypad's dialog body
+
+
+def first_non_empty(*xs: str) -> str:
+    return next((x for x in xs if x.strip()), "")
+
+
+def permission_title(name: str) -> str:
+    """The permission dialog's title, as Claude Code words it."""
+    if name in ("Edit", "MultiEdit", "NotebookEdit"):
+        return "Edit file"
+    if name == "Write":
+        return "Create file"
+    return {
+        "Bash": "Bash command", "PowerShell": "PowerShell command", "Read": "Read file", "Glob": "Search files",
+        "Grep": "Search files", "WebFetch": "Fetch", "WebSearch": "Web search", "ExitPlanMode": "Ready to code?",
+        "Agent": "Agent", "Task": "Agent",
+    }.get(name, "Tool use: " + tool_name(name))
+
+
+def permission_question(name: str, inp: dict[str, Any]) -> str:
+    """The line above the options."""
+    f = base(s(inp, "file_path") + s(inp, "notebook_path"))
+    if name in ("Edit", "MultiEdit", "NotebookEdit") and f:
+        return f"Do you want to make this edit to {f}?"
+    if name == "Write" and f:
+        return f"Do you want to create {f}?"
+    if name == "ExitPlanMode":
+        return "Would you like to proceed?"
+    return "Do you want to proceed?"
+
+
+def always_label(suggestions: list[Any]) -> str:
+    """Option 2 of the permission dialog: what accepting Claude Code's
+    permission_suggestions does, in its words."""
+    for u in suggestions:
+        if not isinstance(u, dict):
+            continue
+        t = u.get("type")
+        if t == "setMode" and u.get("mode") == "acceptEdits":
+            return "Yes, allow all edits during this session"
+        if t == "addDirectories" and u.get("directories"):
+            return f"Yes, and always allow access to {base(str(u['directories'][0]))}/"
+        if t == "addRules":
+            rules = [str(r.get("ruleContent") or r.get("toolName") or "") for r in u.get("rules") or [] if isinstance(r, dict)]
+            if rules := [r for r in rules if r]:
+                return "Yes, and don't ask again for " + ", ".join(rules)
+    return "Yes, and don't ask again"
+
+
+# ---- Markdown, for the keypad's transcript --------------------------------------
+# The keypad draws two styles, switched by markers in the text: BOLD (headings
+# and **bold**) and CODE (`code` and code blocks). Everything else is reduced
+# to plain text the way the terminal shows it: links become their text, table
+# separator rows and fences disappear.
+BOLD, CODE = "\x01", "\x02"
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+_MD_RULE = re.compile(r"^\s{0,3}([-*_])(\s*\1){2,}\s*$")
+_MD_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
+_MD_BULLET = re.compile(r"^(\s*)[*+]\s+")
+_MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)\s]*\)")
+_MD_BOLD = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*|__(?=\S)(.+?)(?<=\S)__")
+_MD_ITALIC = re.compile(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])")
+
+
+def _inline(s: str, bold: bool = True) -> str:
+    """`code`, **bold**, *italic* and links within one line."""
+    parts = s.split("`")
+    if len(parts) % 2 == 0:  # an unmatched backtick: leave it
+        tail = parts.pop()
+        parts[-1] += "`" + tail
+    out = []
+    for i, p in enumerate(parts):
+        if i % 2:
+            out.append(CODE + p + CODE if p else "``")
+            continue
+        p = _MD_LINK.sub(r"\1", p)
+        p = _MD_BOLD.sub((lambda m: BOLD + (m.group(1) or m.group(2)) + BOLD) if bold else
+                         (lambda m: m.group(1) or m.group(2)), p)
+        out.append(_MD_ITALIC.sub(r"\1", p))
+    return "".join(out)
+
+
+def markdown(s: str) -> str:
+    """Claude's Markdown as the keypad draws it (see BOLD, CODE)."""
+    s = s.replace(BOLD, "").replace(CODE, "").replace("\r", "")
+    out: list[str] = []
+    fence = False
+    for line in s.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fence = not fence
+            continue
+        if fence:
+            out.append(CODE + line + CODE if line.strip() else "")
+        elif m := _MD_HEADING.match(line):
+            out.append(BOLD + _inline(m.group(1), bold=False) + BOLD)
+        elif _MD_TABLE_SEP.match(line) and "|" in line:
+            continue
+        elif _MD_RULE.match(line):
+            out.append("")
+        else:
+            out.append(_inline(_MD_BULLET.sub(r"\1- ", line)))
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out))  # at most one blank line
+    return text.strip("\n")

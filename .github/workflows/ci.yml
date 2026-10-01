@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  host:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12
+      - run: uv run ruff check keypad tests
+      - run: uv run pytest -q
+
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install platformio
+      - run: pio test -e native
+        working-directory: firmware
+      - name: build (version = tag, so the keypad reports what the host bundles)
+        working-directory: firmware
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then V=${GITHUB_REF_NAME#v}; else V=dev-${GITHUB_SHA::7}; fi
+          echo "$V" > firmware-version
+          PLATFORMIO_BUILD_FLAGS="-DKEYPAD_FW_VERSION=\\\"$V\\\"" pio run -e keypad
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            firmware/.pio/build/keypad/firmware.bin
+            firmware/firmware-version
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host, firmware]
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12
+        working-directory: host
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: fw
+      - name: bundle firmware
+        shell: bash
+        run: |
+          cp fw/.pio/build/keypad/firmware.bin host/keypad/data/keypad.bin
+          cp fw/firmware-version host/keypad/data/firmware-version
+      - name: macOS app
+        if: runner.os == 'macOS'
+        run: VERSION=${GITHUB_REF_NAME} packaging/macos/build.sh
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: packaging\windows\build.ps1 -Version $env:GITHUB_REF_NAME
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/*setup.exe
