@@ -17,12 +17,10 @@ jobs:
         working-directory: host
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: host/go.mod
-      - run: go vet ./...
-      - run: go test -race ./...
-      - run: go build ./cmd/keypad
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12
+      - run: uv run ruff check keypad tests
+      - run: uv run pytest -q
 
   firmware:
     runs-on: ubuntu-latest
@@ -38,12 +36,19 @@ jobs:
       - run: pip install platformio
       - run: pio test -e native
         working-directory: firmware
-      - run: pio run -e keypad
+      - name: build (version = tag, so the keypad reports what the host bundles)
         working-directory: firmware
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then V=${GITHUB_REF_NAME#v}; else V=dev-${GITHUB_SHA::7}; fi
+          echo "$V" > firmware-version
+          PLATFORMIO_BUILD_FLAGS="-DKEYPAD_FW_VERSION=\\\"$V\\\"" pio run -e keypad
       - uses: actions/upload-artifact@v4
         with:
           name: firmware
-          path: firmware/.pio/build/keypad/firmware.bin
+          path: |
+            firmware/.pio/build/keypad/firmware.bin
+            firmware/firmware-version
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -54,31 +59,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: host/go.mod
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12
+        working-directory: host
       - uses: actions/download-artifact@v4
         with:
           name: firmware
-          path: host/internal/firmware/bin
+          path: fw
       - name: bundle firmware
         shell: bash
-        run: mv host/internal/firmware/bin/firmware.bin host/internal/firmware/bin/keypad.bin
+        run: |
+          cp fw/.pio/build/keypad/firmware.bin host/keypad/data/keypad.bin
+          cp fw/firmware-version host/keypad/data/firmware-version
       - name: macOS app
         if: runner.os == 'macOS'
-        run: |
-          V=${GITHUB_REF_NAME}
-          VERSION=$V LDFLAGS="-s -w -X main.version=$V -X github.com/jameelhamdan/assistant-keypad/host/internal/firmware.Version=${V#v}" packaging/macos/build.sh
+        run: VERSION=${GITHUB_REF_NAME} packaging/macos/build.sh
       - name: Windows installer
         if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          V=${GITHUB_REF_NAME}
-          L="-s -w -X main.version=$V -X github.com/jameelhamdan/assistant-keypad/host/internal/firmware.Version=${V#v}"
-          mkdir -p dist/windows
-          (cd host && go build -trimpath -ldflags "$L" -o ../dist/windows/keypad.exe ./cmd/keypad)
-          (cd host && go build -trimpath -ldflags "$L -H windowsgui" -o ../dist/windows/keypadw.exe ./cmd/keypad)
-          iscc //DVersion=${V#v} packaging/windows/keypad.iss
+        shell: pwsh
+        run: packaging\windows\build.ps1 -Version $env:GITHUB_REF_NAME
       - uses: softprops/action-gh-release@v2
         with:
           files: |

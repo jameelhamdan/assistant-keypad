@@ -12,7 +12,7 @@ constexpr uint8_t ENC_SLOT = NUM_KEYS;
 struct Key {
     bool stable, raw;
     uint32_t changed, pressStart;
-    bool longFired, clean;
+    bool clean;
 };
 Key keys[SLOTS];
 
@@ -41,13 +41,9 @@ void debounce(uint8_t slot, bool raw, uint32_t now) {
         k.stable = raw;
         if (raw) {
             k.pressStart = now;
-            k.longFired = false;
             k.clean = !othersDown(slot);
         }
         push({keyOf(slot), raw ? KeyAction::Press : KeyAction::Release, now, k.pressStart, k.clean});
-    } else if (k.stable && !k.longFired && now - k.pressStart >= LONG_PRESS_MS) {
-        k.longFired = true;
-        push({keyOf(slot), KeyAction::Long, now, k.pressStart, k.clean});
     }
 }
 
@@ -70,8 +66,8 @@ int32_t encTaken = 0;
 void IRAM_ATTR onEncoder() {
     uint8_t pins = (digitalRead(ENC_CLK_PIN) << 1) | digitalRead(ENC_DT_PIN);
     encState = TABLE[encState & 0x0F][pins];
-    if ((encState & 0x30) == DIR_CW) encSteps++;
-    else if ((encState & 0x30) == DIR_CCW) encSteps--;
+    if ((encState & 0x30) == DIR_CW) encSteps = encSteps + 1;
+    else if ((encState & 0x30) == DIR_CCW) encSteps = encSteps - 1;
 }
 
 }  // namespace

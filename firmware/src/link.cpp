@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "crypto.h"
+#include "mem.h"
 
 namespace {
 
@@ -16,7 +17,7 @@ MessageHandler handler = nullptr;
 const char *devId = "";
 
 // ---- USB -----------------------------------------------------------------------
-char usbBuf[MSG_MAX];
+char *usbBuf;   // MSG_MAX bytes
 size_t usbLen = 0;
 bool usbOverflow = false;
 
@@ -46,7 +47,7 @@ bool serving = false;
 WifiStatus wifi = {WifiState::Off, "", 0};
 WiFiServer server(TCP_PORT);
 
-constexpr size_t FRAME_MAX = 4096;
+constexpr size_t FRAME_MAX = MSG_MAX;
 
 struct Session {
     WiFiClient c;
@@ -55,7 +56,7 @@ struct Session {
     bool authed = false;  // first frame decrypted: the peer holds the key
     uint32_t since = 0;
     Sealer tx, rx;
-    uint8_t buf[FRAME_MAX + 2];
+    uint8_t *buf = nullptr;   // FRAME_MAX + 2 bytes
     size_t have = 0;
 
     void close() {
@@ -69,8 +70,8 @@ struct Session {
 Session slots[2];
 Session *active = &slots[0];
 Session *pending = &slots[1];
-uint8_t plain[FRAME_MAX];
-uint8_t sealed[FRAME_MAX + 2];
+uint8_t *plain;    // FRAME_MAX bytes
+uint8_t *sealed;   // FRAME_MAX + 2 bytes
 
 bool writeFrame(WiFiClient &c, const uint8_t *b, size_t n) {
     uint8_t hdr[2] = {(uint8_t)(n >> 8), (uint8_t)n};
@@ -134,7 +135,7 @@ void pollSession(Session &s) {
     if (!s.authed && millis() - s.since > HANDSHAKE_MS) { s.close(); return; }
     int avail = s.c.available();
     while (avail > 0 && s.used) {
-        size_t room = sizeof(s.buf) - s.have;
+        size_t room = FRAME_MAX + 2 - s.have;
         int got = s.c.read(s.buf + s.have, min((size_t)avail, room));
         if (got <= 0) break;
         s.have += got;
@@ -179,6 +180,7 @@ void pollWifi() {
         if (wifi.state == WifiState::Up) {
             active->close();
             pending->close();
+            wifiStartedAt = millis();   // lost the network: give auto-reconnect the same grace as a first join
         }
         wifi.state = (millis() - wifiStartedAt > 20000 && st != WL_IDLE_STATUS) ? WifiState::Failed : WifiState::Connecting;
         wifi.ip[0] = '\0';
@@ -202,6 +204,10 @@ void pollWifi() {
 void linkBegin(MessageHandler h, const char *deviceId) {
     handler = h;
     devId = deviceId;
+    usbBuf = (char *)bigAlloc(MSG_MAX);
+    plain = (uint8_t *)bigAlloc(FRAME_MAX);
+    sealed = (uint8_t *)bigAlloc(FRAME_MAX + 2);
+    for (Session &s : slots) s.buf = (uint8_t *)bigAlloc(FRAME_MAX + 2);
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(deviceId);

@@ -1,23 +1,28 @@
 # Keypad - build everything from the repo root.
+#   make setup       create the Python environment (host/.venv, needs uv)
 #   make test        host + firmware unit tests
 #   make firmware    build the keypad firmware (PlatformIO)
-#   make flash       flash it over USB (stop the Keypad agent first)
-#   make host        build the keypad binary for this machine
+#   make flash       flash it over USB (quit Keypad first: it holds the port)
 #   make mac         Keypad.app + DMG (macOS)
-#   make windows     keypad.exe + keypadw.exe (cross-compiled); installer: packaging/windows/keypad.iss
+#   Windows:         packaging\windows\build.ps1 -Version x.y.z
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 FW_VERSION ?= $(patsubst v%,%,$(VERSION))
-LDFLAGS := -s -w -X main.version=$(VERSION) -X github.com/jameelhamdan/assistant-keypad/host/internal/firmware.Version=$(FW_VERSION)
 FW_BIN := firmware/.pio/build/keypad/firmware.bin
-DIST := dist
+DATA := host/keypad/data
 
-.PHONY: test test-host test-firmware firmware flash bundle-firmware host mac windows clean
+.PHONY: setup test test-host test-firmware lint firmware flash bundle-firmware mac clean
+
+setup:
+	cd host && uv sync
 
 test: test-host test-firmware
 
-test-host:
-	cd host && go vet ./... && go test -race ./...
+test-host: setup
+	cd host && .venv/bin/python -m pytest -q
+
+lint: setup
+	cd host && .venv/bin/ruff check keypad tests
 
 test-firmware:
 	cd firmware && pio test -e native
@@ -26,23 +31,15 @@ firmware:
 	cd firmware && PLATFORMIO_BUILD_FLAGS='-DKEYPAD_FW_VERSION=\"$(FW_VERSION)\"' pio run -e keypad
 
 flash:
-	cd firmware && pio run -e keypad -t upload
+	cd firmware && PLATFORMIO_BUILD_FLAGS='-DKEYPAD_FW_VERSION=\"$(FW_VERSION)\"' pio run -e keypad -t upload
 
-# Embed the firmware image in the host binary (enables "Update firmware" in Settings).
+# Bundle the firmware image (enables "Update firmware" in the tray).
 bundle-firmware: firmware
-	cp $(FW_BIN) host/internal/firmware/bin/keypad.bin
+	cp $(FW_BIN) $(DATA)/keypad.bin
+	printf '%s\n' "$(FW_VERSION)" > $(DATA)/firmware-version
 
-host:
-	mkdir -p $(DIST)
-	cd host && go build -trimpath -ldflags "$(LDFLAGS)" -o ../$(DIST)/keypad ./cmd/keypad
-
-mac: bundle-firmware
-	VERSION=$(VERSION) LDFLAGS="$(LDFLAGS)" packaging/macos/build.sh
-
-windows: bundle-firmware
-	mkdir -p $(DIST)/windows
-	cd host && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o ../$(DIST)/windows/keypad.exe ./cmd/keypad
-	cd host && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS) -H windowsgui" -o ../$(DIST)/windows/keypadw.exe ./cmd/keypad
+mac: setup bundle-firmware
+	VERSION=$(VERSION) packaging/macos/build.sh
 
 clean:
-	rm -rf $(DIST) firmware/.pio/build host/internal/firmware/bin/keypad.bin
+	rm -rf dist firmware/.pio/build $(DATA)/keypad.bin $(DATA)/firmware-version

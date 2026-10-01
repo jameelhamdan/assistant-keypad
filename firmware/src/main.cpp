@@ -51,8 +51,9 @@ void loop() {
         uiRender(model);
         lastFrame = now;
     }
-    if (model.brightness != appliedBrightness) {
-        appliedBrightness = model.brightness;
+    uint8_t want = model.dimmed && model.brightness > DIM_PCT ? DIM_PCT : model.brightness;
+    if (want != appliedBrightness) {
+        appliedBrightness = want;
         uiBrightness(appliedBrightness);
     }
     if (watchdog) esp_task_wdt_reset();

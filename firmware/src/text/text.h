@@ -6,7 +6,8 @@
 
 // Replace characters our fonts cannot draw, in place: typographic
 // punctuation becomes ASCII, Latin-1 and Arabic are kept, anything else
-// becomes '?'. Control characters other than '\n' become spaces.
+// becomes '?'. Control characters other than '\n' and the style markers
+// \x01 (bold) and \x02 (code) become spaces.
 void textSanitize(char *s);
 
 struct TextLine {

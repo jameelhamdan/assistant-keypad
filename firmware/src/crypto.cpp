@@ -2,8 +2,6 @@
 
 #include <string.h>
 
-#include <stdio.h>
-
 #include "mbedtls/md.h"
 
 namespace {
@@ -75,12 +73,22 @@ bool Sealer::open(const uint8_t *in, size_t len, uint8_t *out) {
     return mbedtls_gcm_auth_decrypt(&ctx_, n, iv, 12, nullptr, 0, in + n, GCM_TAG, in, out) == 0;
 }
 
+namespace {
+int nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+}  // namespace
+
+// Strict: sscanf("%2x") would also accept " f", "+f" and "-1".
 bool hexDecode(const char *hex, uint8_t *out, size_t n) {
     if (!hex || strlen(hex) != n * 2) return false;
     for (size_t i = 0; i < n; i++) {
-        unsigned v;
-        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return false;
-        out[i] = (uint8_t)v;
+        int hi = nibble(hex[2 * i]), lo = nibble(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)(hi << 4 | lo);
     }
     return true;
 }

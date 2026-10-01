@@ -1,12 +1,12 @@
 // Key matrix (keys 1-8), encoder switch (key 0) and encoder rotation.
-// One PRESS and one RELEASE per physical press, LONG once when held.
+// One PRESS and one RELEASE per physical press.
 // `clean` = no other key was down when the press began (the matrix has no
 // diodes, so decision screens only accept clean presses).
 #pragma once
 
 #include <stdint.h>
 
-enum class KeyAction : uint8_t { Press, Release, Long };
+enum class KeyAction : uint8_t { Press, Release };
 
 struct KeyEvent {
     uint8_t key;        // 1..8, or 0 for the encoder switch

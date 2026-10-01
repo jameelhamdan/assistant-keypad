@@ -26,10 +26,9 @@ GPIO17 (top)    1       2       3       4
 GPIO16 (bot)    5       6       7       8
 ```
 
-The encoder switch is key 0 in the protocol. The matrix has no diodes, so three held keys can ghost a fourth. Decision screens therefore accept only *clean* presses, with no other key held.
+The layout is fixed: 1–3 pick options, 4 up, 8 down, 5 Esc, 6 sessions, 7 Enter; the encoder turns like 4/8 and clicks like 5 (see [the protocol](../proto/PROTOCOL.md#keys)). The encoder switch is key 0 in the protocol. The matrix has no diodes, so three held keys can ghost a fourth. Decision screens therefore accept only *clean* presses, with no other key held.
 
 - Debounce: 30 ms.
-- Long press: 700 ms.
 - The encoder uses a full-cycle state table, one step per detent.
 
 ## Flashing
@@ -42,4 +41,4 @@ pio device monitor           # JSON lines from the keypad
 
 If the port doesn't appear: hold **BOOT**, press **RST**, release **BOOT**, then upload again. After flashing, press **RST** once if the keypad doesn't show up.
 
-Later updates go over the protocol itself (USB or Wi-Fi) from Settings → *Update firmware*, or `keypad update <id> firmware.bin`. The image is written to the idle OTA slot and MD5-checked before the keypad reboots into it.
+Later updates go over the protocol itself (USB or Wi-Fi) from the tray menu (your keypad → *Update firmware*), or `keypad update <id> firmware.bin`. The image is written to the idle OTA slot and MD5-checked before the keypad reboots into it.
