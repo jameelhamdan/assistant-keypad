@@ -72,12 +72,17 @@ class _Chan:
     def __init__(self, timeout: float | None):
         if sys.platform == "win32":
             deadline = time.monotonic() + 2
+            missing = 0
             while True:
                 try:
                     self._f = open(_pipe_name(), "r+b", buffering=0)  # noqa: SIM115
                     break
                 except FileNotFoundError as e:
-                    raise AgentNotRunning(str(e)) from e
+                    # The agent has no free pipe instance for an instant after accepting a client.
+                    missing += 1
+                    if missing > 3:  # ~30 ms: really not running; hooks must fail fast
+                        raise AgentNotRunning(str(e)) from e
+                    time.sleep(0.01)
                 except OSError as e:  # ERROR_PIPE_BUSY: all instances in use
                     if time.monotonic() > deadline:
                         raise AgentNotRunning(str(e)) from e
@@ -244,6 +249,7 @@ def _serve_pipe(handler: Handler, stop: threading.Event) -> None:
     k32.PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
                                   ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
     k32.DisconnectNamedPipe.argtypes = [wintypes.HANDLE]
+    k32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
     k32.CloseHandle.argtypes = [wintypes.HANDLE]
 
     # Only the pipe's owner (this user) and SYSTEM may open it.
@@ -283,6 +289,9 @@ def _serve_pipe(handler: Handler, stop: threading.Event) -> None:
         try:
             _handle(handler, read, write, gone)
         finally:
+            # Disconnecting discards what the client has not read yet (its read then fails
+            # with EINVAL, at random): wait until it has taken the whole reply.
+            k32.FlushFileBuffers(h)
             k32.DisconnectNamedPipe(h)
             k32.CloseHandle(h)
 
