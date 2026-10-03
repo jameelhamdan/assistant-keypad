@@ -9,12 +9,17 @@ import os
 import subprocess
 import sys
 
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def run(args: list[str], *, timeout: float | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """subprocess.run with output captured as text and no console flash on Windows."""
+    return subprocess.run(args, capture_output=True, text=True, creationflags=NO_WINDOW, timeout=timeout, env=env)
 
 
 def _out(args: list[str]) -> str:
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW).stdout
+        return run(args, timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 

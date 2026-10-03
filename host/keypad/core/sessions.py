@@ -16,6 +16,10 @@ IDLE, THINKING, WORKING, TOOL = "idle", "thinking", "working", "tool"
 PERMISSION, QUESTION, INPUT = "permission", "question", "input"
 DONE, STOPPED, CONTINUING, FAILED, ENDED = "done", "stopped", "continuing", "failed", "ended"
 
+# This state taxonomy is duplicated by hand in two other places that must
+# stay in sync: host/keypad/tray.py (state_word/_color_for) and
+# firmware/src/ui.cpp (busy()/waiting()/stateColor()/stateWord()). A new
+# state added here needs updating in both.
 BUSY_STATES = {THINKING, WORKING, TOOL, PERMISSION, QUESTION, INPUT, CONTINUING}
 WAITING_STATES = {PERMISSION, QUESTION, STOPPED, INPUT}
 WORKING_STATES = {THINKING, WORKING, TOOL, CONTINUING}
@@ -44,6 +48,7 @@ class Session:
     mode: str = ""  # Claude Code's permission mode (acceptEdits, plan, bypassPermissions; "" = default)
     log: list[dict[str, str]] = field(default_factory=list)  # latest transcript lines, oldest first
     seen: set[str] = field(default_factory=set, repr=False)  # transcript message ids already in log
+    inflight: int = field(default=0, repr=False)  # tool calls (main + subagents) currently running
 
     def view(self) -> dict[str, Any]:
         return {k: copy.copy(v) for k, v in self.__dict__.items() if k != "seen"}
@@ -103,6 +108,21 @@ class Sessions:
                 return
             if not self._pinned or self._pinned == sid:
                 self._current = sid
+
+    def enter_tool(self, sid: str) -> None:
+        """A tool call (main session or a subagent) started running."""
+        with self._lock:
+            self._get(sid).inflight += 1
+
+    def exit_tool(self, sid: str) -> int:
+        """A tool call finished; returns how many are still running for sid.
+        Concurrent subagents share one session's displayed state, so a quick
+        call finishing must not blank out the state of another still running
+        -- the caller checks this before overwriting it with a generic one."""
+        with self._lock:
+            x = self._get(sid)
+            x.inflight = max(0, x.inflight - 1)
+            return x.inflight
 
     def start(self, sid: str, cwd: str, pids: list[int] | None) -> None:
         """Registers a (re)started session and resets its counters."""

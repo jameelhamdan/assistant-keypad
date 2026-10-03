@@ -3,11 +3,13 @@
 A small hardware keypad for [Claude Code](https://claude.com/claude-code): see
 what Claude is doing on a color screen, and allow or deny tool use, answer
 questions, or tell it to keep going, with one press. It works over USB or
-Wi-Fi, on macOS and Windows, with any number of Claude Code sessions.
+Wi-Fi, on macOS and Windows, across all your open Claude Code sessions (up to
+32 tracked at once, 8 shown on a keypad).
 
-It runs on the same hardware as [Jameel](https://github.com/AbdelrhmanFrehat/Jameel)
-(LILYGO T-Display S3, 2×4 key matrix, rotary encoder). The software is a
-clean rewrite.
+It runs on a LILYGO T-Display S3 with a 2×4 key matrix and a rotary encoder
+([hardware](docs/HARDWARE.md)).
+
+![The keypad: what each button does](docs/img/keypad-layout.svg)
 
 The screen is a small Claude Code: the session's transcript (`> prompt`,
 `⏺` messages and tool calls, `⎿` results, `✻ Brewing… (12s)`), its
@@ -15,18 +17,7 @@ permission dialogs with the `❯` cursor and numbered options, and the
 permission mode (`⏵⏵ accept edits on`). The keys work like Claude Code's
 keyboard: number keys pick, up/down move, Enter selects, Esc backs out.
 
-```
- ╭──────────────────────────────────────╮
- │ Bash command       +1  money-mind 4:59│      keys:  1  2  3  4▲
- │   pytest && git push                 │             5  6  7  8▼    + encoder
- │   Run tests, then push               │
- │ Do you want to proceed?              │      1-3  pick option 1-3     4/8  up/down
- │ ❯ 1. Yes                             │      7    Enter               5    Esc (answer on the PC)
- │   2. Yes, and don't ask again for p… │      6    sessions            encoder: turn = 4/8, click = 5
- │   3. No                              │
- ╰──────────────────────────────────────╯
-   1-3 pick  4/8 move  7 select  5 answer on PC
-```
+![A permission request on the keypad](docs/img/permission-dialog.svg)
 
 ## Features
 
@@ -64,7 +55,21 @@ Keypad now starts at login and shows a small keypad icon in the menu bar (macOS)
 2. **Restart** any Claude Code sessions that are already open, so they load the hooks.
 3. **Plug the keypad in** with a USB-C cable. Within a few seconds it switches from *Waiting for your computer* to the status screen, and the tray lists it. That's all you need for USB. Wi-Fi is optional (see [Pair for Wi-Fi](#pair-for-wi-fi)).
 
-**First flash:** a keypad still running the old Jameel firmware needs this firmware once, over USB: quit Keypad from the tray, then run `make flash` (PlatformIO). After that, updates come from the tray: your keypad → **Update firmware**.
+**First flash:** a new keypad needs the firmware once, over USB: quit Keypad from the tray, then run `make flash` (PlatformIO). After that, firmware updates come from the tray: your keypad → **Update firmware**.
+
+## Update
+
+Keypad checks [GitHub releases](https://github.com/jameelhamdan/assistant-keypad/releases) once a day and, if a newer one is out, notifies you once and adds **Update available: v…** to the tray menu; click it to open that release's page. It never downloads or installs anything itself:
+
+- **macOS:** quit Keypad from the tray, open the new DMG and drag Keypad to Applications again (replacing the old app), then reopen it.
+- **Windows:** run the new `Keypad-<version>-setup.exe` over the existing install. It upgrades in place (same entry in **Apps & features**, no duplicate) and reconnects Claude Code.
+
+## Uninstall
+
+- **macOS:** tray menu → **Uninstall Keypad…** removes the Claude Code hooks and login items, then move Keypad.app to the Trash. (Dragging the app to the Trash *first*, without uninstalling, leaves its login items behind — pointing at a binary that no longer exists — and Claude Code's hooks still referencing it; run **Uninstall Keypad…** before you delete the app, or `keypad uninstall` from a terminal if you already deleted it.)
+- **Windows:** uninstall from **Settings → Apps → Installed apps** (or Control Panel → Programs and Features) like any other app; it asks whether to also delete settings and pairing keys.
+
+On both, settings and pairing keys (see [Where things live](#where-things-live)) are left behind by default so a later reinstall picks up where you left off; remove that folder yourself, or use its uninstaller's offer to delete it, for a clean slate.
 
 ## How to use
 
@@ -78,6 +83,7 @@ Keep working in Claude Code as usual. The keypad follows along and asks you when
 | **5** | Esc: back, or leave the request to the PC |
 | **6** | the session list |
 | encoder | turn = up/down, click = Esc (a stray knob press never decides anything) |
+| mic *(optional ninth button)* | push-to-talk: hold to talk, release to stop. **Not wired yet:** the firmware and host already handle it (`MIC_PIN` in `firmware/include/config.h`, [protocol](proto/PROTOCOL.md)), but no audio is captured |
 
 **Main screen.** The session you're working in, like its terminal tab: the title, your last prompt, Claude's messages, the tools it runs and `✻ Brewing… (12s)` while it works. **4/8** scroll back through the transcript; **5** jumps back to the newest line (and to the latest activity, if you had picked a session). With saved prompts, **7** sends one to the shown session.
 
@@ -103,7 +109,13 @@ Keep working in Claude Code as usual. The keypad follows along and asks you when
 
 ### The tray menu
 
-Click the keypad icon in the menu bar or notification area. Its color shows the state: **orange** Claude is working, **blue** waiting for you, **green** idle, **grey** paused or no keypad.
+Click the keypad icon in the menu bar or notification area. The icon has three looks:
+
+![Tray icon states](docs/img/tray-states.svg)
+
+- **Filled keys** (a keypad is connected and sessions are open): **orange** Claude is working, **blue** waiting for you, **green** all idle.
+- **Outlined green keys:** a keypad is connected but no Claude Code session is open.
+- **Dim, slashed keys:** no keypad connected, or paused.
 
 - **Each keypad:** connection and battery, and a submenu with **Theme** (match computer, dark, light), **Brightness**, **Identify** (shows this computer's name on it), **Rename…**, **Only these projects…**, **Set up Wi-Fi…**, **Update firmware** and **Forget…**
 - **Add keypad…**: pairs a keypad plugged in with USB, or explains how to connect one.
@@ -112,7 +124,7 @@ Click the keypad icon in the menu bar or notification area. Its color shows the 
 - **Pause keypad:** leave every decision to the PC for now.
 - **Options:** **When Claude finishes, ask on the keypad** (when you've been away 1, 2 or 5 minutes, always, or never), answer Claude's questions on the keypad, hand back to the PC when you type there and tell Claude a keypad is connected. Also **how long the keypad waits** for an answer, and **how many continues in a row** before it asks.
 - **Saved prompts:** none at first. **Add saved prompt…**, and for each one **Edit…**, **Move up**, **Remove** (up to 16). They appear when Claude finishes and behind **7** on the main screen.
-- **Claude Code integration** (connect or disconnect), **Start at login**, **Edit settings file…** (every setting, in `config.yaml`, applied when you save), **Open logs folder**, **Quit Keypad**.
+- **Claude Code integration** (connect or disconnect), **Start at login**, **Edit settings file…** (every setting, in `config.yaml`, applied when you save), **Open logs folder**, **Update available: v…** (only once one is, see [Update](#update)), **Uninstall Keypad…** (macOS only — see [Uninstall](#uninstall)), **Quit Keypad**.
 
 Text (names, Wi-Fi details, saved prompts) is entered in small native pop-up dialogs.
 
@@ -144,16 +156,33 @@ How it works: pairing gives the keypad a fresh secret key and this computer's id
 
 ## How it fits together
 
+```mermaid
+flowchart LR
+    CC["Claude Code sessions"] -- "hooks: keypad-hook" --> A
+    CC -- "MCP: keypad mcp" --> A
+    T["Tray menu"] --> A
+    A["keypad agent<br/>sessions · request queue · saved prompts<br/>(per-user, starts at login)"]
+    A -- "USB serial" --> K1["keypad"]
+    A -- "Wi-Fi: TCP + AES-GCM, mDNS" --> K2["keypad, keypad …"]
 ```
-Claude Code sessions ── hooks: keypad-hook <Event> ─┐
-                     ── MCP:   keypad mcp ──────────┤  Unix socket / named pipe (this user only)
-Tray menu ──────────────────────────────────────────┤
-                                                    ▼
-                                             keypad agent  (per-user, starts at login)
-                                     sessions · request queue · saved prompts
-                                   USB serial │                  │ Wi-Fi: TCP + AES-GCM, mDNS
-                                              ▼                  ▼
-                                           keypad             keypad, keypad …
+
+The hooks, MCP server and tray reach the agent over a Unix socket / named pipe (this user only).
+
+How a permission request travels:
+
+```mermaid
+sequenceDiagram
+    participant C as Claude Code
+    participant H as keypad-hook
+    participant A as agent
+    participant K as keypad
+    C->>H: PermissionRequest
+    H->>A: request (private socket)
+    A->>K: screen (USB or Wi-Fi)
+    K-->>A: press (1 = Yes)
+    A-->>H: allow
+    H-->>C: decision
+    Note over C,K: timeout, pause, no keypad or key 5: the hook returns {} and Claude Code asks in the terminal
 ```
 
 - **One Python program** (`keypad`) does everything: the agent, the tray, the MCP shim and the CLI. The Claude Code hook is a separate small executable (`keypad-hook`, the same code as `keypad hook`) that loads only Python's standard library, so it starts quickly on every tool call.
@@ -197,7 +226,6 @@ docs/       hardware, security, testing
 | Settings, pairing keys, logs | `~/Library/Application Support/Keypad` | `%APPDATA%\Keypad` |
 | Claude Code hooks | `~/.claude/settings.json` | `%USERPROFILE%\.claude\settings.json` |
 | Login items | `~/Library/LaunchAgents/com.jameelhamdan.keypad.*.plist` | Task Scheduler "Keypad Agent" + Run key |
-
 | The `keypad` command | `/Applications/Keypad.app/Contents/MacOS/keypad` | `%LOCALAPPDATA%\Programs\Keypad\keypad.exe` |
 
-`keypad status` shows keypads and sessions. `keypad claude status` checks the integration. `keypad config` opens the settings file. `keypad uninstall` removes the hooks and login items (settings and pairing keys stay).
+`keypad status` shows keypads and sessions. `keypad claude status` checks the integration. `keypad config` opens the settings file. `keypad uninstall` removes the hooks and login items (settings and pairing keys stay; add `--purge` to remove those too).

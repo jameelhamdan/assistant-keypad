@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from . import osutil
 from .config import write_atomic
 from .paths import env_without_bundle, hook_path
 
@@ -203,9 +204,7 @@ def check(binary: str) -> Status:
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
-    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    return subprocess.run(args, capture_output=True, text=True, creationflags=flags, timeout=60,
-                          env=env_without_bundle())
+    return osutil.run(args, timeout=60, env=env_without_bundle())
 
 
 def _register_mcp(binary: str) -> None:

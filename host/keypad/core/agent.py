@@ -196,6 +196,14 @@ class Agent(HookMixin):
             self.mark_dirty()
         elif t == "wifi":
             self.mark_dirty()
+        elif t == "mic":
+            self.on_mic(c, m["act"] == "start")
+
+    def on_mic(self, c: Conn, talking: bool) -> None:
+        """The mic button (push-to-talk): held = talking. The button is
+        programmed end to end but nothing consumes it yet; this is where voice
+        input to the shown session plugs in once audio is wired."""
+        self.log.info("mic %s on %s (not wired: no audio is captured)", "start" if talking else "stop", c.id)
 
     # ---- shortcuts ----
 

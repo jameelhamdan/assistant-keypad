@@ -136,6 +136,7 @@ when `menu` is set.
 {"t":"press","id":"status","key":7,"act":"menu"}
 {"t":"session","act":"select","sid":"9f0e1d2c"}
 {"t":"session","act":"follow"}
+{"t":"mic","act":"start"}                                      (push-to-talk: sent when the mic button goes down, "stop" when it comes up)
 {"t":"provisioned","ok":true}
 {"t":"wifi","state":"up","ssid":"Home","ip":"192.168.1.40","rssi":-51}
 {"t":"ota","off":2048}                                          (ack per chunk: off = that chunk's offset; "ok":false,"err" on failure; "ok":true|false after ota_end)

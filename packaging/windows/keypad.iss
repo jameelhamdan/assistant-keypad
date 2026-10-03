@@ -9,7 +9,7 @@
 AppId={{6C0F7E2B-3A0D-4F57-9B1E-5B0B8D1C4A11}
 AppName=Keypad
 AppVersion={#Version}
-AppPublisher=Keypad
+AppPublisher=Jameel Hamdan
 DefaultDirName={localappdata}\Programs\Keypad
 DefaultGroupName=Keypad
 DisableProgramGroupPage=yes
@@ -38,3 +38,14 @@ Filename: "{app}\keypad.exe"; Parameters: "install"; Flags: runhidden waituntilt
 
 [UninstallRun]
 Filename: "{app}\keypad.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "KeypadUninstall"
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  // Settings and pairing keys live outside the app folder (in %APPDATA%\Keypad),
+  // so the installer's own file removal never touches them; ask once, after
+  // the uninstall above has already removed the hooks and login items.
+  if CurUninstallStep = usPostUninstall then
+    if MsgBox('Also delete Keypad''s settings and pairing keys?', mbConfirmation, MB_YESNO) = IDYES then
+      DelTree(ExpandConstant('{userappdata}\Keypad'), True, True, True);
+end;

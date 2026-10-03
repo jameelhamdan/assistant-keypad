@@ -38,7 +38,7 @@ def usb_ports() -> list[str]:
 
     try:
         return [p.device for p in list_ports.comports() if p.vid == proto.USB_VENDOR_ID]
-    except OSError:
+    except Exception:  # polled every 2s by Hub.run(): one bad scan must not kill that thread forever
         return []
 
 

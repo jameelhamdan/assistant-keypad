@@ -1,6 +1,6 @@
 # Hardware
 
-LILYGO **T-Display S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM, 1.9" 170×320 ST7789 IPS on an 8-bit parallel bus), a 2×4 key matrix and a rotary encoder with a push switch. This is the same hardware as the original Jameel project; its pin map was confirmed on the real board.
+LILYGO **T-Display S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM, 1.9" 170×320 ST7789 IPS on an 8-bit parallel bus), a 2×4 key matrix and a rotary encoder with a push switch. The pin map below was confirmed on the real board.
 
 ## Pins
 
@@ -15,6 +15,7 @@ LILYGO **T-Display S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM, 1.9" 170×320 ST7789
 | 39–42, 45–48 | LCD D0–D7 |
 | 4 | battery voltage (1:2 divider) |
 | 19, 20 | native USB, the serial link |
+| `MIC_PIN` (-1) | push-to-talk mic button, switch to ground (`INPUT_PULLUP`). **Not wired:** set `MIC_PIN` in `config.h` to enable it; it sends `{"t":"mic","act":"start"\|"stop"}` and the host only logs it for now |
 
 GPIO43/44 are UART0 when "USB CDC on boot" is off, so the firmware refuses to build without `ARDUINO_USB_CDC_ON_BOOT=1` (set in `platformio.ini`).
 

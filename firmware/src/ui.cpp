@@ -55,6 +55,11 @@ uint16_t tone(Tone t) {
     }
 }
 
+// This state taxonomy is duplicated by hand in three other places that must
+// stay in sync: host/keypad/core/sessions.py (BUSY_STATES/WAITING_STATES/
+// WORKING_STATES), host/keypad/tray.py (state_word/_color_for), and
+// stateWord()/waiting() further down this file. A new state added on one
+// side needs updating in all four.
 bool busy(const char *s) {
     return !strcmp(s, "working") || !strcmp(s, "thinking") || !strcmp(s, "tool") || !strcmp(s, "continuing");
 }
@@ -371,7 +376,9 @@ void gElbowS(int16_t x, int16_t y, uint16_t c) {
     cv->drawFastHLine(x + 2, y + 6, 4, c);
 }
 
-// Session states in a word, for the picker.
+// Session states in a word, for the picker. See the cross-reference comment
+// on busy() above: this and waiting() are the other two copies of the state
+// taxonomy that have to stay in sync with it.
 const char *stateWord(const char *s) {
     if (busy(s)) return "working";
     if (!strcmp(s, "permission") || !strcmp(s, "question") || !strcmp(s, "input") || !strcmp(s, "stopped")) return "needs you";

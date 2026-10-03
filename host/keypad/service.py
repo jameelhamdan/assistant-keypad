@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from . import config
+from . import config, osutil
 from .paths import env_without_bundle, gui_path
 
 AGENT_LABEL = "com.jameelhamdan.keypad.agent"
@@ -21,19 +21,24 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "Keypad"
 TRAY_MUTEX = "Local\\KeypadTray"
 
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
 
 def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(list(args), capture_output=True, text=True, creationflags=_NO_WINDOW)
+    return osutil.run(list(args))
 
 
 def spawn(binary: str, *args: str) -> None:
     """Starts `binary args...` detached from this process."""
     exe = gui_path(binary)
     if sys.platform == "win32":
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-        subprocess.Popen([exe, *args], creationflags=flags, close_fds=True, env=env_without_bundle())
+        # CREATE_BREAKAWAY_FROM_JOB: if this process (e.g. the tray) is itself
+        # in a job object with kill-on-close semantics and dies unexpectedly,
+        # the child must not be taken down with it.
+        base = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | osutil.NO_WINDOW
+        try:
+            subprocess.Popen([exe, *args], creationflags=base | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                             close_fds=True, env=env_without_bundle())
+        except OSError:  # the enclosing job (if any) forbids breakaway: fall back to inheriting it
+            subprocess.Popen([exe, *args], creationflags=base, close_fds=True, env=env_without_bundle())
     else:
         subprocess.Popen([exe, *args], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, env=env_without_bundle())
@@ -63,6 +68,7 @@ def _plist(label: str, binary: str, arg: str) -> str:
 	<key>ThrottleInterval</key><integer>5</integer>
 	<key>ProcessType</key><string>Interactive</string>
 	<key>LimitLoadToSessionType</key><string>Aqua</string>
+	<key>StandardOutPath</key><string>{log}</string>
 	<key>StandardErrorPath</key><string>{log}</string>
 </dict>
 </plist>

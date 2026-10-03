@@ -6,8 +6,9 @@
 
 namespace {
 
-constexpr uint8_t SLOTS = NUM_KEYS + 1;   // index 0..7 = keys 1..8, index 8 = encoder switch
+constexpr uint8_t SLOTS = NUM_KEYS + 2;   // index 0..7 = keys 1..8, 8 = encoder switch, 9 = mic button
 constexpr uint8_t ENC_SLOT = NUM_KEYS;
+constexpr uint8_t MIC_SLOT = NUM_KEYS + 1;
 
 struct Key {
     bool stable, raw;
@@ -20,8 +21,8 @@ constexpr uint8_t QN = 16;
 KeyEvent queue[QN];
 uint8_t qHead = 0, qCount = 0;
 
-uint8_t keyOf(uint8_t slot) { return slot == ENC_SLOT ? KEY_ENC : slot + 1; }
-uint8_t slotOf(uint8_t key) { return key == KEY_ENC ? ENC_SLOT : key - 1; }
+uint8_t keyOf(uint8_t slot) { return slot == ENC_SLOT ? KEY_ENC : slot == MIC_SLOT ? KEY_MIC : slot + 1; }
+uint8_t slotOf(uint8_t key) { return key == KEY_ENC ? ENC_SLOT : key == KEY_MIC ? MIC_SLOT : key - 1; }
 
 void push(const KeyEvent &ev) {
     if (qCount == QN) { qHead = (qHead + 1) % QN; qCount--; }   // drop the oldest
@@ -30,7 +31,7 @@ void push(const KeyEvent &ev) {
 }
 
 bool othersDown(uint8_t slot) {
-    for (uint8_t i = 0; i < SLOTS; i++) if (i != slot && keys[i].stable) return true;
+    for (uint8_t i = 0; i < SLOTS; i++) if (i != slot && i != MIC_SLOT && keys[i].stable) return true;   // the mic has its own pin: no ghosting
     return false;
 }
 
@@ -76,6 +77,7 @@ void inputBegin() {
     for (int8_t p : ROW_PINS) { pinMode(p, OUTPUT); digitalWrite(p, HIGH); }
     for (int8_t p : COL_PINS) pinMode(p, INPUT_PULLUP);
     pinMode(ENC_SW_PIN, INPUT_PULLUP);
+    if (MIC_PIN >= 0) pinMode(MIC_PIN, INPUT_PULLUP);
     pinMode(ENC_CLK_PIN, INPUT_PULLUP);
     pinMode(ENC_DT_PIN, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(ENC_CLK_PIN), onEncoder, CHANGE);
@@ -93,6 +95,7 @@ void inputPoll() {
         digitalWrite(ROW_PINS[r], HIGH);
     }
     debounce(ENC_SLOT, digitalRead(ENC_SW_PIN) == LOW, now);
+    if (MIC_PIN >= 0) debounce(MIC_SLOT, digitalRead(MIC_PIN) == LOW, now);
 }
 
 bool inputNext(KeyEvent &ev) {

@@ -32,6 +32,18 @@ hpyz = PYZ(h.pure)
 
 common = dict(debug=False, strip=False, upx=False, icon=ICON, exclude_binaries=True,
               target_arch=os.environ.get("KEYPAD_ARCH") or None)
+if sys.platform == "win32":
+    from PyInstaller.utils.win32.versioninfo import FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo, VarStruct, VSVersionInfo
+
+    parts = [int(p) for p in VERSION.split(".") if p.isdigit()][:4]
+    parts += [0] * (4 - len(parts))
+    common["version"] = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=tuple(parts), prodvers=tuple(parts)),
+        kids=[StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "Jameel Hamdan"), StringStruct("FileDescription", "Keypad"),
+            StringStruct("FileVersion", VERSION), StringStruct("ProductName", "Keypad"),
+            StringStruct("ProductVersion", VERSION), StringStruct("OriginalFilename", "keypad.exe"),
+        ])]), VarFileInfo([VarStruct("Translation", [1033, 1200])])])
 exes = [EXE(pyz, a.scripts, name="keypad", console=sys.platform == "win32", **common),
         EXE(hpyz, h.scripts, name="keypad-hook", console=True, **common)]
 if sys.platform == "win32":

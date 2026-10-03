@@ -7,6 +7,8 @@ import json
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +17,10 @@ from .core.sessions import WAITING_STATES, WORKING_STATES
 from .core.text import clip
 from .paths import in_app_bundle, self_path
 from .version import version
+
+RELEASES_URL = "https://github.com/jameelhamdan/assistant-keypad/releases"
+RELEASES_API = "https://api.github.com/repos/jameelhamdan/assistant-keypad/releases/latest"
+UPDATE_CHECK_EVERY = 24 * 3600
 
 # The keypad's palette: Claude orange = working, permission blue = waiting
 # on you, green = idle, grey = paused or no keypad.
@@ -41,8 +47,11 @@ def tray_place() -> str:
     return "notification area (it may be under the ^ arrow)" if sys.platform == "win32" else "menu bar"
 
 
-def icon_image(rgb: tuple[int, int, int]):
-    """The keypad: 2 rows x 4 keys; the top row carries the state color."""
+def icon_image(rgb: tuple[int, int, int], mode: str = "sessions"):
+    """The keypad: 2 rows x 4 keys. Three looks, readable at 16px:
+    "sessions" - filled, top row in the state color (sessions are mirrored);
+    "ready"    - outlined keys: a keypad is connected but there are no sessions;
+    "off"      - dim keys with a slash: no keypad (or paused)."""
     from PIL import Image, ImageDraw
 
     s, key, gap = 64, 12, 4
@@ -53,8 +62,15 @@ def icon_image(rgb: tuple[int, int, int]):
     for row in range(2):
         for col in range(4):
             x, y = x0 + col * (key + gap), y0 + row * (key + gap)
-            fill = (*rgb, 255 if row == 0 else 150)
-            d.rounded_rectangle((x, y, x + key - 1, y + key - 1), radius=3, fill=fill)
+            box = (x, y, x + key - 1, y + key - 1)
+            if mode == "ready":
+                d.rounded_rectangle(box, radius=3, outline=(*rgb, 255), width=2)
+            elif mode == "off":
+                d.rounded_rectangle(box, radius=3, fill=(*rgb, 110))
+            else:
+                d.rounded_rectangle(box, radius=3, fill=(*rgb, 255 if row == 0 else 150))
+    if mode == "off":
+        d.line((x0 - 2, y0 + 2 * key + gap + 4, x0 + 4 * key + 3 * gap + 2, y0 - 4), fill=(*rgb, 255), width=4)
     return img
 
 
@@ -109,13 +125,13 @@ def complain(fn: Callable[[], Any]) -> None:
         dialog.alert("Keypad", str(e))
 
 
-def get_path(d: dict, path: tuple[str, ...]) -> Any:
+def _get_path(d: dict, path: tuple[str, ...]) -> Any:
     for k in path:
         d = d.get(k, {}) if isinstance(d, dict) else {}
     return d
 
 
-def set_path(d: dict, path: tuple[str, ...], v: Any) -> None:
+def _set_path(d: dict, path: tuple[str, ...], v: Any) -> None:
     for k in path[:-1]:
         d = d.setdefault(k, {})
     d[path[-1]] = v
@@ -125,8 +141,40 @@ def minutes(sec: int) -> str:
     return f"{sec} s" if sec < 60 else f"{sec // 60} min"
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    out = []
+    for p in v.lstrip("v").split("."):
+        if not p.isdigit():
+            break
+        out.append(int(p))
+    return tuple(out)
+
+
+def newer(a: str, b: str) -> bool:
+    """Whether release tag a is newer than the running version b."""
+    return _version_tuple(a) > _version_tuple(b)
+
+
+def latest_release() -> str:
+    """The latest release tag on GitHub ("" on a dev build, no network, or
+    any other failure -- this must never raise or block the caller)."""
+    if version() == "dev":
+        return ""
+    try:
+        req = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            tag = json.loads(r.read()).get("tag_name", "")
+    except (OSError, urllib.error.URLError, ValueError):
+        return ""
+    return tag if isinstance(tag, str) else ""
+
+
 def state_word(state: str) -> str:
-    """A session's state in a word, as the keypad's session list shows it."""
+    """A session's state in a word, as the keypad's session list shows it.
+    This and _look_for below duplicate by hand the state taxonomy in
+    core/sessions.py (BUSY_STATES/WAITING_STATES/WORKING_STATES) and
+    firmware/src/ui.cpp (busy()/waiting()/stateColor()/stateWord()); a new
+    state needs updating in all of them."""
     if state in WORKING_STATES:
         return "working"
     if state in WAITING_STATES:
@@ -165,12 +213,41 @@ class Tray:
         self.progress: dict[str, int] = {}  # firmware updates in progress, by keypad id
         self.claude_ok = claudecfg.check(self.bin).installed
         self.login = service.installed()
+        self.update_available = ""  # a newer release's tag, once found
         self._sig = ""
-        self._color: tuple[int, int, int] | None = None
+        self._color: tuple[str, tuple[int, int, int]] | None = None  # (mode, rgb) last drawn
         self._dialogs = threading.Lock()  # one dialog flow at a time
+        # see _guard_win32_menu. Must be reentrant: TrackPopupMenuEx pumps its
+        # own nested message loop on the UI thread while a menu is open, and
+        # a second tray notification arriving during that can re-dispatch
+        # into _on_notify on the very same thread before the outer call
+        # returns -- a plain Lock would self-deadlock there.
+        self._win_ui_lock = threading.RLock()
         self.icon = pystray.Icon("Keypad", icon_image(COL_OFF), "Keypad", menu=pystray.Menu(self._items))
+        if sys.platform == "win32":
+            self._guard_win32_menu()
 
     # ---- plumbing ----
+
+    def _guard_win32_menu(self) -> None:
+        """pystray's win32 backend has no locking around its native menu
+        handle: update_menu() (called off the UI thread by poll_once/refresh)
+        destroys the old HMENU and installs a new one, while a real click is
+        dispatched on the message-loop thread straight into _on_notify, which
+        reads that same handle and calls TrackPopupMenuEx on it. A poll
+        landing mid-click can have one thread destroy the handle the other is
+        about to show a popup with, crashing the process with no Python
+        traceback. Serialize both sides behind one lock via on_main()."""
+        icon = self.icon
+        orig_on_notify = icon._on_notify
+
+        def locked_on_notify(wparam, lparam):
+            with self._win_ui_lock:
+                return orig_on_notify(wparam, lparam)
+
+        for code, handler in list(icon._message_handlers.items()):
+            if getattr(handler, "__func__", None) is orig_on_notify.__func__:
+                icon._message_handlers[code] = locked_on_notify
 
     def run(self) -> None:
         if sys.platform == "darwin":  # a menu bar app: no Dock icon, even when not run from the .app bundle
@@ -182,13 +259,32 @@ class Tray:
     def _setup(self, icon) -> None:
         icon.visible = True
         threading.Thread(target=self._poll, daemon=True).start()
+        threading.Thread(target=self._check_updates, daemon=True).start()
+
+    def _check_updates(self) -> None:
+        """Looks for a newer release once at startup, then once a day. Keypad
+        never downloads or installs anything itself -- just points at the
+        release to keep this simple, matching the manual update flow in the
+        README."""
+        while True:
+            if (tag := latest_release()) and newer(tag, version()) and tag != self.update_available:
+                self.update_available = tag
+                self.refresh()
+                dialog.notify("Keypad update available", f"{tag} is out. See the tray menu to get it.")
+            time.sleep(UPDATE_CHECK_EVERY)
 
     def on_main(self, fn: Callable[[], None]) -> None:
-        """AppKit may only be touched from the main thread; pystray doesn't ensure it."""
+        """AppKit may only be touched from the main thread; pystray doesn't
+        ensure it. On Windows, pystray's menu/icon/title updates and its own
+        click handler touch the same native handles with no locking (see
+        _guard_win32_menu) -- route them through the same lock here."""
         if sys.platform == "darwin":
             from PyObjCTools import AppHelper
 
             AppHelper.callAfter(fn)
+        elif sys.platform == "win32":
+            with self._win_ui_lock:
+                fn()
         else:
             fn()
 
@@ -234,10 +330,10 @@ class Tray:
         except (ipc.AgentNotRunning, ipc.RequestError):
             snap, cfg, ok = {}, self.cfg, False
         self.snap, self.cfg, self.ok = snap, cfg, ok
-        color = self._color_for(snap) if ok else COL_OFF
-        if color != self._color:
-            self._color = color
-            img = icon_image(color)
+        look = self._look_for(snap) if ok else ("off", COL_OFF)
+        if look != self._color:
+            self._color = look
+            img = icon_image(look[1], look[0])
             self.on_main(lambda: setattr(self.icon, "icon", img))
         sig = json.dumps([snap, cfg, ok, self.progress, self.claude_ok, self.login], sort_keys=True, default=str)
         if sig != self._sig:  # only rebuild the menu when something changed
@@ -278,15 +374,20 @@ class Tray:
         except Exception:  # pystray internals: losing the text must not break the tray
             pass
 
-    def _color_for(self, s: dict) -> tuple[int, int, int]:
-        states = {x.get("state") for x in s.get("sessions", [])}
+    def _look_for(self, s: dict) -> tuple[str, tuple[int, int, int]]:
+        """The icon's three states: no keypad (or paused) -> "off"; a keypad
+        but no sessions -> "ready"; sessions -> colored by what they're doing."""
+        sessions = s.get("sessions", [])
         if s.get("paused") or not s.get("keypads"):
-            return COL_OFF
+            return "off", COL_OFF
+        if not sessions:
+            return "ready", COL_IDLE
+        states = {x.get("state") for x in sessions}
         if s.get("busy") or states & WAITING_STATES:
-            return COL_WAITING
+            return "sessions", COL_WAITING
         if states & WORKING_STATES:
-            return COL_WORKING
-        return COL_IDLE
+            return "sessions", COL_WORKING
+        return "sessions", COL_IDLE
 
     def _head(self) -> str:
         if not self.ok:
@@ -318,8 +419,12 @@ class Tray:
                 Item("Start at login", self.act(self.toggle_login), checked=lambda _: self.login),
                 Item("Edit settings file…", self.act(self.edit_file)),
                 Item("Open logs folder", self.act(lambda: osutil.open_path(str(config.log_dir())))),
-                SEP, Item(f"Keypad {version()}", None, enabled=False),
-                Item("Quit Keypad", self.quit)]
+                SEP, Item(f"Keypad {version()}", None, enabled=False)]
+        if self.update_available:
+            out.append(Item(f"Update available: {self.update_available}", self.act(self.open_release)))
+        if sys.platform == "darwin":  # Windows has a normal uninstaller in "Apps & features"
+            out.append(Item("Uninstall Keypad…", self.act(self.uninstall, True)))
+        out.append(Item("Quit Keypad", self.quit))
         return out
 
     def _keypad_item(self, d: dict):
@@ -384,8 +489,8 @@ class Tray:
 
     def _option_items(self) -> list:
         Item, Menu = self.pystray.MenuItem, self.pystray.Menu
-        out = [Item(label, self.act(lambda p=path: self.edit_config(lambda cfg: set_path(cfg, p, not get_path(cfg, p)))),
-                    checked=lambda _, p=path: bool(get_path(self.cfg, p))) for path, label in OPTIONS]
+        out = [Item(label, self.act(lambda p=path: self.edit_config(lambda cfg: _set_path(cfg, p, not _get_path(cfg, p)))),
+                    checked=lambda _, p=path: bool(_get_path(self.cfg, p))) for path, label in OPTIONS]
 
         def set_stop(ask: bool, away: int) -> Callable:
             return self.act(lambda: self.edit_config(lambda cfg: cfg["behavior"].update(ask_on_stop=ask, stop_when_away=away)))
@@ -400,31 +505,32 @@ class Tray:
             Item(label, set_stop(ask, away), radio=True, checked=stop_checked(ask, away)) for ask, away, label in STOP_PRESETS])))
 
         def set_wait(sec: int) -> Callable:
-            return self.act(lambda: self.edit_config(lambda cfg: set_path(cfg, ("behavior", "timeout"), sec)))
+            return self.act(lambda: self.edit_config(lambda cfg: _set_path(cfg, ("behavior", "timeout"), sec)))
 
         out += [self.pystray.Menu.SEPARATOR,
                 Item("Keypad waits for an answer", Menu(*[
                     Item(minutes(sec), set_wait(sec), radio=True,
-                         checked=lambda _, sec=sec: get_path(self.cfg, ("behavior", "timeout")) == sec)
+                         checked=lambda _, sec=sec: _get_path(self.cfg, ("behavior", "timeout")) == sec)
                     for sec in WAIT_PRESETS])),
                 Item("Continues in a row before asking", Menu(*[
-                    Item(str(n), self.act(lambda n=n: self.edit_config(lambda cfg: set_path(cfg, ("behavior", "max_continues"), n))),
-                         radio=True, checked=lambda _, n=n: get_path(self.cfg, ("behavior", "max_continues")) == n)
+                    Item(str(n), self.act(lambda n=n: self.edit_config(lambda cfg: _set_path(cfg, ("behavior", "max_continues"), n))),
+                         radio=True, checked=lambda _, n=n: _get_path(self.cfg, ("behavior", "max_continues")) == n)
                     for n in LIMIT_PRESETS]))]
         return out
 
     def _shortcut_items(self) -> list:
         Item, Menu = self.pystray.MenuItem, self.pystray.Menu
         shortcuts = self.cfg.get("shortcuts", [])
-        out = [Item("Add saved prompt…", self.act(lambda: self.edit_shortcut(-1), True),
+        out = [Item("Add saved prompt…", self.act(lambda: self.edit_shortcut(None), True),
                     enabled=len(shortcuts) < config.MAX_SHORTCUTS)]
         if shortcuts:
             out.append(self.pystray.Menu.SEPARATOR)
         for i, sc in enumerate(shortcuts):
             out.append(Item(sc.get("label", ""), Menu(
-                Item("Edit…", self.act(lambda i=i: self.edit_shortcut(i), True)),
-                Item("Move up", self.act(lambda i=i: self.edit_config(lambda cfg: _swap(cfg["shortcuts"], i))), enabled=i > 0),
-                Item("Remove", self.act(lambda i=i: self.remove_shortcut(i), True)))))
+                Item("Edit…", self.act(lambda sc=sc: self.edit_shortcut(sc), True)),
+                Item("Move up", self.act(lambda sc=sc: self.edit_config(lambda cfg: _move_up(cfg["shortcuts"], sc))),
+                     enabled=i > 0),
+                Item("Remove", self.act(lambda sc=sc: self.remove_shortcut(sc), True)))))
         return out
 
     # ---- actions ----
@@ -552,10 +658,13 @@ class Tray:
         finally:
             self.progress.pop(dev_id, None)
 
-    def edit_shortcut(self, i: int) -> None:
-        c = call("GET", "/config")
-        sc = c["shortcuts"][i] if 0 <= i < len(c["shortcuts"]) else {"label": "", "prompt": ""}
-        title = "Edit saved prompt" if i >= 0 else "Add saved prompt"
+    def edit_shortcut(self, target: dict | None) -> None:
+        """target is the shortcut shown on the menu when clicked, by value
+        (None to add a new one) -- not a position, since self.cfg can be
+        refreshed by the poll thread between menu build and click, which
+        would make a captured index refer to a different saved prompt."""
+        sc = target if target is not None else {"label": "", "prompt": ""}
+        title = "Edit saved prompt" if target is not None else "Add saved prompt"
         label = dialog.input(title, "The name on the keypad (up to 28 characters).", "Name", sc["label"])
         if label is None:
             return
@@ -568,17 +677,45 @@ class Tray:
         new = {"label": label.strip()[:28], "prompt": prompt}
 
         def fn(cfg: dict) -> None:
-            if 0 <= i < len(cfg["shortcuts"]):
-                cfg["shortcuts"][i] = new
-            elif i < 0:
+            if target is None:
                 cfg["shortcuts"].append(new)
+            elif target in cfg["shortcuts"]:
+                cfg["shortcuts"][cfg["shortcuts"].index(target)] = new
+            else:
+                dialog.alert(title, "This saved prompt was changed elsewhere; nothing was edited.")
 
         self.edit_config(fn)
 
-    def remove_shortcut(self, i: int) -> None:
-        shortcuts = self.cfg.get("shortcuts", [])
-        if i < len(shortcuts) and dialog.confirm("Remove saved prompt?", f'Remove "{shortcuts[i]["label"]}"?', "Remove", "Cancel"):
-            self.edit_config(lambda cfg: cfg["shortcuts"].pop(i) if i < len(cfg["shortcuts"]) else None)
+    def remove_shortcut(self, target: dict) -> None:
+        """target is matched by value against the live config, for the same
+        reason as edit_shortcut: a captured index can drift."""
+        if target not in self.cfg.get("shortcuts", []):
+            return
+        if dialog.confirm("Remove saved prompt?", f'Remove "{target["label"]}"?', "Remove", "Cancel"):
+            self.edit_config(lambda cfg: cfg["shortcuts"].remove(target) if target in cfg["shortcuts"] else None)
+
+    def open_release(self) -> None:
+        osutil.open_path(f"{RELEASES_URL}/tag/{self.update_available}" if self.update_available else RELEASES_URL)
+
+    def uninstall(self) -> None:
+        """Removes the login items and Claude Code integration, then quits.
+        Needed on macOS: dragging Keypad.app to the Trash (the normal way to
+        remove a mac app) would otherwise leave its LaunchAgents and Claude
+        Code hooks pointing at a binary that no longer exists."""
+        data_dir = config.data_dir()
+        if not dialog.confirm("Uninstall Keypad?", "This removes Keypad's Claude Code hooks and MCP server, and "
+                              "turns off starting at login, then quits Keypad. You can then move Keypad.app to the "
+                              f"Trash. Settings and pairing keys stay in {data_dir} unless you delete them yourself.",
+                              "Uninstall", "Cancel"):
+            return
+        try:
+            call("POST", "/quit", timeout=5)
+        except (ipc.AgentNotRunning, ipc.RequestError):
+            pass
+        service.uninstall()
+        claudecfg.uninstall()
+        dialog.notify("Keypad uninstalled", "You can now move Keypad.app to the Trash.")
+        self.icon.stop()
 
     def quit(self, icon=None, item=None) -> None:
         try:
@@ -588,6 +725,6 @@ class Tray:
         self.icon.stop()
 
 
-def _swap(lst: list, i: int) -> None:
-    if 0 < i < len(lst):
+def _move_up(lst: list, item: dict) -> None:
+    if item in lst and (i := lst.index(item)) > 0:
         lst[i - 1], lst[i] = lst[i], lst[i - 1]

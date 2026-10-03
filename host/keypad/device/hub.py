@@ -42,7 +42,7 @@ class Conn:
         self.wifi: dict[str, Any] = hello.get("wifi") if isinstance(hello.get("wifi"), dict) else {}
         self.battery = battery_of(hello)
         self._lock = threading.Lock()
-        self._waiters: list[tuple[str, queue.Queue]] = []
+        self._waiters: list[tuple[str, Callable[[dict[str, Any]], bool] | None, queue.Queue]] = []
         self.done = threading.Event()
 
     def send(self, msg: dict[str, Any]) -> bool:
@@ -65,12 +65,16 @@ class Conn:
                     "fw": self.hello.get("fw", ""), "paired": bool(self.hello.get("paired")), "battery": self.battery,
                     "wifi": dict(self.wifi), "since": self.since}
 
-    def request(self, msg: dict[str, Any], t: str, timeout: float) -> dict[str, Any]:
+    def request(self, msg: dict[str, Any], t: str, timeout: float,
+                match: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any]:
         """Sends msg and waits for the reply of type t. Registers before
-        sending: a fast keypad can answer before a later registration."""
+        sending: a fast keypad can answer before a later registration.
+        match, if given, further filters replies (e.g. by chunk offset) so a
+        stale reply to an earlier, already-timed-out request of the same type
+        can't be delivered to this one."""
         w: queue.Queue = queue.Queue(maxsize=1)
         with self._lock:
-            self._waiters.append((t, w))
+            self._waiters.append((t, match, w))
         try:
             if not self.send(msg):
                 raise ConnectionError("could not reach the keypad")
@@ -85,12 +89,12 @@ class Conn:
                         raise TimeoutError(f"keypad did not answer {t!r}") from None
         finally:
             with self._lock:
-                self._waiters = [x for x in self._waiters if x[1] is not w]
+                self._waiters = [x for x in self._waiters if x[2] is not w]
 
     def _deliver(self, m: dict[str, Any]) -> None:
         with self._lock:
-            for t, w in self._waiters:
-                if t == m["t"]:
+            for t, match, w in self._waiters:
+                if t == m["t"] and (match is None or match(m)):
                     try:
                         w.put_nowait(m)
                     except queue.Full:
@@ -403,7 +407,8 @@ class Hub:
             chunk = 2048
             for off in range(0, len(image), chunk):
                 end = min(off + chunk, len(image))
-                m = c.request({"t": "ota_data", "off": off, "d": base64.b64encode(image[off:end]).decode()}, "ota", 10)
+                m = c.request({"t": "ota_data", "off": off, "d": base64.b64encode(image[off:end]).decode()}, "ota", 10,
+                             match=lambda m, off=off: m.get("off") == off)
                 if m.get("ok") is False:
                     raise RuntimeError(f"keypad rejected the update: {m.get('err', '')}")
                 if m.get("off", 0) != off:

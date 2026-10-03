@@ -9,7 +9,7 @@
 enum class KeyAction : uint8_t { Press, Release };
 
 struct KeyEvent {
-    uint8_t key;        // 1..8, or 0 for the encoder switch
+    uint8_t key;        // 1..8, 0 for the encoder switch, KEY_MIC (9) for the mic button
     KeyAction action;
     uint32_t at;        // millis() of the event
     uint32_t pressedAt; // millis() when the press began

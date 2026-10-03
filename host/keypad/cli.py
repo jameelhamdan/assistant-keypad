@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import time
 
 from . import claudecfg, config, ipc, osutil, service
@@ -45,7 +46,11 @@ def cmd_uninstall(args: list[str]) -> None:
     service.uninstall()
     claudecfg.uninstall()
     print("Removed the Claude Code integration and the login items.")
-    print("Settings and pairing keys remain in", config.data_dir())
+    if "--purge" in args:
+        shutil.rmtree(config.data_dir(), ignore_errors=True)
+        print("Also removed settings and pairing keys in", config.data_dir())
+    else:
+        print("Settings and pairing keys remain in", config.data_dir(), "(--purge removes them too)")
 
 
 def cmd_claude(args: list[str]) -> None:

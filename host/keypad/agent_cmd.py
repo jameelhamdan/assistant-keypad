@@ -96,14 +96,20 @@ def run_agent(args: list[str]) -> int:
     srv = Server(agent, self_path(), log, stop.set)
 
     def serve() -> None:
-        try:
-            ipc.serve(srv.handle, stop)
-        except ipc.Running:
-            log.info("another agent is already running; exiting")
-            stop.set()
-        except Exception:
-            log.exception("ipc server stopped")
-            stop.set()
+        # A transient error here (e.g. a momentary OSError from the accept
+        # loop) must not take the whole agent down with it: restart the IPC
+        # server instead of escalating to a full shutdown. Only a genuine
+        # second agent (ipc.Running) or a real stop request ends this loop.
+        while not stop.is_set():
+            try:
+                ipc.serve(srv.handle, stop)
+                return
+            except ipc.Running:
+                log.info("another agent is already running; exiting")
+                stop.set()
+            except Exception:
+                log.exception("ipc server error; restarting")
+                time.sleep(1)
 
     for target, targs in ((serve, ()), (agent.run, (stop,)), (hub.run, (stop,)), (watch, (stop, agent, hub))):
         threading.Thread(target=target, args=targs, daemon=True).start()

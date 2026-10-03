@@ -24,7 +24,8 @@ KEY_CLICK, KEY_ESC, KEY_ENTER = 0, 5, 7  # 0 = the encoder click, which is Esc t
 ESC_KEYS = (KEY_CLICK, KEY_ESC)
 DIRECT_PICKS = 3  # keys 1-3 pick options 1-3
 
-DEVICE_TYPES = {"hello", "pong", "ack", "press", "session", "provisioned", "wifi", "ota", "log"}
+DEVICE_TYPES = {"hello", "pong", "ack", "press", "session", "provisioned", "wifi", "ota", "log", "mic"}
+MIC_ACTS = ("start", "stop")  # push-to-talk: hold the mic button to talk, release to stop
 
 
 # Text buffers on the keypad (firmware/src/model.h), in bytes without the NUL.
@@ -92,6 +93,8 @@ def decode(b: bytes) -> dict[str, Any]:
         or not all(isinstance(i, int) for i in sel)
     ):
         raise InvalidMessage("field out of range")
+    if m["t"] == "mic" and m.get("act") not in MIC_ACTS:
+        raise InvalidMessage("bad mic act")
     idx = m.get("idx")
     if idx is not None and not isinstance(idx, int):
         raise InvalidMessage("bad idx")

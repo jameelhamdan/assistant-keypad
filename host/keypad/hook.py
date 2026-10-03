@@ -17,7 +17,9 @@ TRANSCRIPT_WINDOW = 256 << 10
 TRANSCRIPT_MAX = 4 << 20
 
 
-def clip(s: str, n: int) -> str:
+def _clip(s: str, n: int) -> str:
+    """Not core.text.clip (different truncation math, off by one at the
+    boundary) -- this file is stdlib-only and can't import it."""
     return s[:n] + "…" if len(s) > n else s
 
 
@@ -27,7 +29,7 @@ def _scan(b: bytes) -> tuple[list[dict[str, str]], str]:
     for line in b.split(b"\n"):
         if b'"type":"ai-title"' in line:
             try:
-                title = clip(json.loads(line).get("aiTitle", ""), 60) or title
+                title = _clip(json.loads(line).get("aiTitle", ""), 60) or title
             except ValueError:
                 pass
             continue
@@ -41,7 +43,7 @@ def _scan(b: bytes) -> tuple[list[dict[str, str]], str]:
             continue
         for c in (e.get("message") or {}).get("content") or []:
             if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
-                texts.append({"id": str(e.get("uuid", "")), "text": clip(c["text"], 8000)})
+                texts.append({"id": str(e.get("uuid", "")), "text": _clip(c["text"], 8000)})
     return texts, title
 
 
@@ -76,7 +78,7 @@ def slim(p: dict) -> dict:
                              "source", "reason", "notification_type", "error_type", "stop_hook_active") if k in p}
     for k, n in (("prompt", 2000), ("last_assistant_message", 8000), ("message", 300), ("error", 400)):
         if isinstance(p.get(k), str):
-            out[k] = clip(p[k], n)
+            out[k] = _clip(p[k], n)
     if isinstance(tp := p.get("transcript_path"), str) and tp:
         texts, title = transcript_tail(tp)
         if texts:
@@ -94,20 +96,20 @@ def slim(p: dict) -> dict:
     if tool in ("Edit", "MultiEdit", "Write", "NotebookEdit"):  # the change itself, shown as a diff to approve
         for k in ("old_string", "new_string", "content", "new_source"):
             if isinstance(v := inp.get(k), str):
-                out.setdefault("change", {})[k] = clip(v, 4000)
+                out.setdefault("change", {})[k] = _clip(v, 4000)
         if isinstance(edits := inp.get("edits"), list):
             out.setdefault("change", {})["edits"] = [
-                {k: clip(e[k], 2000) for k in ("old_string", "new_string") if isinstance(e.get(k), str)}
+                {k: _clip(e[k], 2000) for k in ("old_string", "new_string") if isinstance(e.get(k), str)}
                 for e in edits[:10] if isinstance(e, dict)]
     if isinstance(sugg := p.get("permission_suggestions"), list):
         out["permission_suggestions"] = sugg[:8]  # echoed back as updatedPermissions ("don't ask again")
-    keep = {k: clip(v, 1400 if k in ("command", "plan") else 600)  # commands and plans whole: they are approved from them
+    keep = {k: _clip(v, 1400 if k in ("command", "plan") else 600)  # commands and plans whole: they are approved from them
             for k in ("command", "description", "file_path", "notebook_path", "pattern", "url", "query", "prompt", "title",
                       "path", "plan") if isinstance(v := inp.get(k), str)}
     if not keep:
         for k, v in inp.items():
             if isinstance(v, str) and len(keep) < 4:
-                keep[k] = clip(v, 200)
+                keep[k] = _clip(v, 200)
     out["tool_input"] = {**keep, **out.pop("change", {})}
     return out
 

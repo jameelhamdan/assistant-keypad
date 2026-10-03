@@ -5,7 +5,7 @@
   keypad hook <Event>  Claude Code command hook (installed into ~/.claude/settings.json)
   keypad mcp           Claude Code MCP server (stdio)
   keypad install       connect Claude Code and start at login
-  keypad uninstall     remove both
+  keypad uninstall [--purge]   remove both (--purge also deletes settings and pairing keys)
   keypad claude install|uninstall|status
   keypad service install|uninstall|status
   keypad status        show keypads and sessions

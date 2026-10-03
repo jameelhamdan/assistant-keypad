@@ -54,5 +54,7 @@ Firmware update over the link: `keypad update <id> firmware/.pio/build/keypad/fi
 - [ ] Tray → keypad → Update firmware over Wi-Fi and over USB: progress in the menu, a notification when done
 - [ ] Tray: saved prompts (add, edit, move, remove), options (including *When Claude finishes*), the wait time and the continue limit take effect
 - [ ] First launch: the *Connect Claude Code?* dialog, then the *Keypad is running* notification (macOS and Windows)
+- [ ] Tray icon: outlined keys with a keypad and no sessions, filled keys (orange / blue / green) with sessions, dim and slashed with no keypad or when paused
+- [ ] Mic button (once wired, `MIC_PIN` in `config.h`): hold and release; `agent.log` shows `mic start` then `mic stop`
 - [ ] Arabic question text renders right-to-left
 - [ ] Fresh install and uninstall on clean macOS and Windows machines

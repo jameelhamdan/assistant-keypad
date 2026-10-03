@@ -2,8 +2,8 @@
 //  Arabic text support: UTF-8 helpers, contextual shaping (presentation
 //  forms), Lam-Alef ligatures, and a compact bidi reordering for one line.
 //
-//  Ported from the original project (tested there against arabic_reshaper +
-//  python-bidi); test/test_text covers the same cases on the host.
+//  Tested against arabic_reshaper + python-bidi; test/test_text covers the
+//  same cases on the host.
 // ============================================================================
 #pragma once
 

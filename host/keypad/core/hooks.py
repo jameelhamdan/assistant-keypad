@@ -169,13 +169,19 @@ class HookMixin:
             if tool == "AskUserQuestion":
                 return self.ask_user_question(ctx, sid, cwd, pids, inp)
             touch(TOOL, tool_verb(tool), ("[agent] " if subagent else "") + summarize(tool, inp))
+            self.sessions.enter_tool(sid)
             if not subagent:
                 return self.deliver_pending(sid, "PreToolUse", out)
         elif event == "PostToolUse":
-            touch(WORKING, "Working", "")
+            # Subagents share the parent session's displayed state; if another
+            # tool call (main or a different subagent) is still running, a
+            # quick one finishing must not blank its state with plain "Working".
+            if self.sessions.exit_tool(sid) == 0:
+                touch(WORKING, "Working", "")
             if not subagent:
                 return self.deliver_pending(sid, "PostToolUse", out)
         elif event == "PostToolUseFailure":
+            self.sessions.exit_tool(sid)
             log_line(LOG_RESULT, "Error: " + first_line(redact(s(p, "error"))))
             touch(WORKING, "Working", tool_name(tool) + " failed: " + redact(s(p, "error")))
         elif event == "PermissionRequest":

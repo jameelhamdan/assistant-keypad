@@ -17,7 +17,11 @@ bool otaBegin(size_t size, const char *md5, const char **err) {
         *err = "not enough space";
         return false;
     }
-    if (md5 && strlen(md5) == 32) Update.setMD5(md5);
+    if (!md5 || strlen(md5) != 32 || !Update.setMD5(md5)) {
+        *err = "bad md5";
+        Update.abort();  // Update.begin() above already allocated; otaAbort() no-ops until running is set
+        return false;
+    }
     running = true;
     total = size;
     written = 0;

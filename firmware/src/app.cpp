@@ -442,6 +442,15 @@ void sendSession(const char *act, const char *sid) {
     sendHost(d);
 }
 
+// Push-to-talk: the mic button never reaches the screens. The host decides what
+// to do with it (nothing yet); the button also wakes the screen.
+void sendMic(bool start) {
+    JsonDocument d;
+    d["t"] = "mic";
+    d["act"] = start ? "start" : "stop";
+    sendHost(d);
+}
+
 void debugLog(const char *fmt, ...) {
 #ifdef KEYPAD_DEBUG
     char msg[160];
@@ -725,7 +734,12 @@ bool appLoop() {
     inputPoll();
     KeyEvent ev;
     while (inputNext(ev)) {
-        onKey(ev);
+        if (ev.key == KEY_MIC) {
+            if (ev.action == KeyAction::Press) wake();
+            sendMic(ev.action == KeyAction::Press);
+        } else {
+            onKey(ev);
+        }
         markDirty();
     }
     if (int32_t steps = inputTakeSteps()) {

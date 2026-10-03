@@ -1,5 +1,5 @@
 // Keypad firmware configuration: LILYGO T-Display S3 + 2x4 key matrix + rotary encoder.
-// The pin map is the one confirmed on the real board by the original project.
+// The pin map is the one confirmed on the real board.
 #pragma once
 
 #include <stddef.h>
@@ -35,6 +35,15 @@ constexpr uint8_t KEY_ENC = 0;                   // encoder push switch
 //                            6    sessions
 constexpr uint8_t KEY_UP = 4, KEY_DOWN = 8, KEY_ESC = 5, KEY_SESSIONS = 6, KEY_ENTER = 7;
 constexpr uint8_t DIRECT_PICKS = 3;              // keys 1..3 pick options 1..3
+
+// ---- Microphone button ------------------------------------------------------------
+// A ninth button for push-to-talk: hold to talk, release to stop. NOT WIRED YET:
+// the pin is -1, so the firmware never reads it. Set MIC_PIN to the GPIO of a
+// switch to ground (INPUT_PULLUP) to enable it; the keypad then sends
+// {"t":"mic","act":"start"|"stop"} to the host (proto/PROTOCOL.md). Capturing audio
+// from an I2S microphone is a later step.
+constexpr int8_t MIC_PIN = -1;
+constexpr uint8_t KEY_MIC = 9;                   // key id of the mic button in KeyEvent
 
 constexpr int ENC_SW_PIN = 1;
 constexpr int ENC_DT_PIN = 2;

@@ -23,7 +23,7 @@ The installer touches only our own hook entries, the `keypad` MCP server and `CL
 | Settings | changed only from the tray menu and native dialogs, over the same private socket; there is no web page or network-facing settings server |
 | Pairing needs physical access | `provision` / `unpair` are accepted only over USB |
 | Wi-Fi link | the host connects out; the keypad accepts only its paired host id; keys from HKDF-SHA256 over the pairing key and both nonces; AES-256-GCM with implicit counters, so any forged, replayed or reordered frame ends the session; a connection that has not proven the key can't displace the current host |
-| Nothing sensitive reaches the device | the hook shim drops tool output and file contents. From the transcript it takes only Claude's own text messages (the prose you see in the terminal, last 4, 400 characters each) and the session title, never thinking, tool calls or their results; `core.text.redact` hides secret-looking strings before display and logs |
+| Nothing sensitive reaches the device | the hook shim drops tool output and file contents. From the transcript it takes only Claude's own text messages (the prose you see in the terminal, last 4, 8,000 characters each) and the session title, never thinking, tool calls or their results; `core.text.redact` hides secret-looking strings before display and logs |
 | Stale and ghost presses | a press must start ≥150 ms after its screen appeared, with no other key held; the device answers each screen once and replays that answer if the host asks again |
 | Loop protection | consecutive keypad continues are counted; at the limit the keypad asks for an explicit confirmation |
 | Test hooks | the simulated keypad exists only behind `keypad agent --fake-device` |
