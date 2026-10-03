@@ -103,8 +103,13 @@ class Conn:
 
 class Hub:
     def __init__(self, store: config.Store, ev: Events, host_name: str = "",
-                 theme: Callable[[], str] | None = None, log: logging.Logger | None = None):
+                 theme: Callable[[], str] | None = None, log: logging.Logger | None = None,
+                 wifi_only: Callable[[], bool] | None = None):
         self.store, self.ev = store, ev
+        # Wi-Fi only: USB is just power, pairing and flashing. The agent doesn't open
+        # the port (so a flasher can have it) unless setup is under way.
+        self.wifi_only = wifi_only or (lambda: False)
+        self._pairing_until = 0.0  # monotonic time until which USB is scanned for pairing
         self.host_name = host_name
         self.theme = theme or (lambda: "dark")
         self.log = log or logging.getLogger("keypad")
@@ -119,6 +124,17 @@ class Hub:
 
     # ---- supervision ----
 
+    def open_pairing(self, seconds: float = 300) -> None:
+        """Scans USB for a while even in Wi-Fi-only mode (Add keypad…)."""
+        self._pairing_until = time.monotonic() + seconds
+
+    def usb_wanted(self) -> bool:
+        """Whether to open USB ports now: always unless Wi-Fi only; then only while
+        pairing, or while no keypad has been paired yet (first setup)."""
+        if not self.wifi_only():
+            return True
+        return time.monotonic() < self._pairing_until or not any(d.key for d in self.store.devices())
+
     def run(self, stop: threading.Event) -> None:
         """Scans USB, browses mDNS and dials paired keypads until stop is set."""
         self.disc.start()
@@ -126,7 +142,7 @@ class Hub:
         no_usb = os.environ.get("KEYPAD_NO_USB") == "1"  # development: force the Wi-Fi path
         try:
             while not stop.is_set():
-                for port in [] if no_usb else usb_ports():
+                for port in [] if no_usb or not self.usb_wanted() else usb_ports():
                     if time.monotonic() < self._quiet.get(port, (0, 0.0))[1]:
                         continue
                     if self._claim("usb:" + port):
@@ -285,8 +301,10 @@ class Hub:
     def _register(self, c: Conn) -> bool:
         with self._lock:
             old = self._conns.get(c.id)
-            if old and old.link.kind == "usb" and c.link.kind == "wifi":
+            if old and old.link.kind == "usb" and c.link.kind == "wifi" and not self.wifi_only():
                 return False  # USB wins while plugged in
+            if old and old.link.kind == "wifi" and c.link.kind == "usb" and self.wifi_only() and old.id == c.id:
+                return False  # Wi-Fi only: a cable adds power, not a second link
             self._conns[c.id] = c
         if old:
             old.close()

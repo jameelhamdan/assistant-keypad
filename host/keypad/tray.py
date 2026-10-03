@@ -36,6 +36,7 @@ STOP_PRESETS = [  # (ask_on_stop, stop_when_away, label)
     (True, 300, "When I've been away 5 min"), (True, 0, "Always"), (False, 0, "Never"),
 ]
 OPTIONS = [  # (path in config, label)
+    (("behavior", "wifi_only"), "Wi-Fi only (USB just for power, setup and flashing)"),
     (("behavior", "intercept_ask_user_question"), "Answer Claude's questions on the keypad"),
     (("behavior", "pc_handback", "enabled"), "Hand back to the PC when I type there"),
     (("behavior", "announce_in_context"), "Tell Claude a keypad is connected"),
@@ -586,6 +587,10 @@ class Tray:
         if usb:
             self.pair(usb[0]["id"], names.get(usb[0]["id"], ""))
             return
+        try:
+            call("POST", "/pairing", {})  # Wi-Fi only mode ignores USB otherwise
+        except ipc.RequestError:
+            pass
         dialog.alert("Add a keypad", "Plug the keypad into this computer with a USB-C cable (not a charge-only one).\n\n"
                      "It appears in this menu within a few seconds and works over the cable right away. "
                      "Then choose Add keypad… again to set up Wi-Fi.")

@@ -91,7 +91,8 @@ def run_agent(args: list[str]) -> int:
         signal.signal(sig, lambda *_: stop.set())
 
     agent = Agent(cfg, store, osutil.idle, log, presence=osutil.idle_any)
-    hub = Hub(store, agent, host_name=socket.gethostname().split(".")[0], theme=theme, log=log)
+    hub = Hub(store, agent, host_name=socket.gethostname().split(".")[0], theme=theme, log=log,
+              wifi_only=lambda: agent.config().behavior.wifi_only)
     agent.hub = hub
     srv = Server(agent, self_path(), log, stop.set)
 

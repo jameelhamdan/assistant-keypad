@@ -53,7 +53,7 @@ Keypad now starts at login and shows a small keypad icon in the menu bar (macOS)
 
 1. **Claude Code:** on macOS, Keypad asks *Connect Claude Code to the keypad?* Click **Connect**. (The Windows installer does this step for you.) It adds Keypad's hooks and its `keypad` MCP server to `~/.claude`, after backing up `settings.json`. To change it later: tray menu → **Claude Code integration**.
 2. **Restart** any Claude Code sessions that are already open, so they load the hooks.
-3. **Plug the keypad in** with a USB-C cable. Within a few seconds it switches from *Waiting for your computer* to the status screen, and the tray lists it. That's all you need for USB. Wi-Fi is optional (see [Pair for Wi-Fi](#pair-for-wi-fi)).
+3. **Plug the keypad in** with a USB-C cable. Within a few seconds it switches from *Waiting for your computer* to the status screen, and the tray lists it. Then pair it for Wi-Fi (see [Pair for Wi-Fi](#pair-for-wi-fi)): from then on the cable is only power and firmware flashing.
 
 **First flash:** a new keypad needs the firmware once, over USB: quit Keypad from the tray, then run `make flash` (PlatformIO). After that, firmware updates come from the tray: your keypad → **Update firmware**.
 
@@ -130,7 +130,7 @@ Text (names, Wi-Fi details, saved prompts) is entered in small native pop-up dia
 
 ## Pair for Wi-Fi
 
-USB works without pairing. Pair once to use the keypad without the cable:
+Keypad is **Wi-Fi only** by default: the cable is for power, this one-time pairing and flashing firmware. Until a keypad is paired, Keypad uses it over USB so you can set it up. Pair once:
 
 1. Plug the keypad into this computer with USB.
 2. Open the tray menu → **Add keypad…** (or your keypad → **Set up Wi-Fi…**).
@@ -139,7 +139,8 @@ USB works without pairing. Pair once to use the keypad without the cable:
 
 How it works: pairing gives the keypad a fresh secret key and this computer's id over the cable. From then on it accepts Wi-Fi connections only from this computer, encrypted with that key, and the computer finds it again by mDNS even if its IP changes. The keypad and computer must be on the same network (some guest or office networks block devices from seeing each other). 2.4 GHz Wi-Fi only.
 
-- **Another computer:** a keypad serves one computer over Wi-Fi. Pairing it from a second computer moves it there. Over USB, any computer running Keypad can use it.
+- **USB afterwards:** once a keypad is paired, Keypad no longer opens its USB port, so `make flash` and serial monitors can use it freely. Tray → **Add keypad…** opens USB for 5 minutes for pairing. To also use the cable for decisions, untick *Wi-Fi only* under Options (`behavior.wifi_only` in `config.yaml`).
+- **Another computer:** a keypad serves one computer over Wi-Fi. Pairing it from a second computer moves it there. Unpaired keypads work over USB on any computer running Keypad.
 - **Change network:** plug it in and run **Set up Wi-Fi…** again.
 - **Forget:** tray menu → your keypad → **Forget…**. If the keypad is connected, it also wipes its Wi-Fi settings.
 - **Several keypads** can be paired with one computer. They all show the same request, and the first answer wins. Each one can be limited to certain projects (your keypad → **Only these projects…**).

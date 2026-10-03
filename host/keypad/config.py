@@ -61,6 +61,7 @@ class Behavior:
     stop_when_away: int = 60  # s without any input before Claude finishing is asked on the keypad (0 = always)
     max_continues: int = 20
     intercept_ask_user_question: bool = True
+    wifi_only: bool = True  # decisions travel over Wi-Fi; USB is for power, pairing and flashing
     announce_in_context: bool = True
     shortcut_ttl: int = 900
     timeout: int = 300  # s the keypad waits for an answer before the PC takes over

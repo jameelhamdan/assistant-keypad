@@ -37,6 +37,10 @@ class Running(Exception):
 
 def _pipe_name() -> str:
     user = os.environ.get("USERNAME", "user").replace("\\", "-").replace(" ", "-")
+    if home := os.environ.get("KEYPAD_HOME"):  # an isolated setup (tests, development) gets its own pipe
+        import hashlib
+
+        user += "-" + hashlib.sha1(home.encode()).hexdigest()[:8]
     return rf"\\.\pipe\keypad-agent-{user}"
 
 

@@ -37,6 +37,7 @@ class Server:
         r("GET", "/config", lambda b, **_: self.a.config().to_dict())
         r("PUT", "/config", self.put_config)
         r("PATCH", "/devices/(?P<id>[^/]+)", self.patch_device)
+        r("POST", "/pairing", lambda b, **_: (self.hub.open_pairing(), ok())[1])
         r("POST", "/devices/(?P<id>[^/]+)/provision", self.provision)
         r("POST", "/devices/(?P<id>[^/]+)/unpair", lambda b, id, **_: (self.hub.unpair(id), ok())[1])
         r("POST", "/devices/(?P<id>[^/]+)/identify", self.identify)
