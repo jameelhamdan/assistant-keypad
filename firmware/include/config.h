@@ -60,6 +60,8 @@ constexpr int16_t SCREEN_W = 320, SCREEN_H = 170;
 // ---- Timing (ms) ------------------------------------------------------------------
 constexpr uint32_t DEBOUNCE_MS = 30;
 constexpr uint32_t STALE_PRESS_MS = 150;   // a press must start this long after its screen appeared
+constexpr uint32_t REPEAT_AFTER_MS = 450;  // holding 4 or 8 (cursor, scroll) repeats after this...
+constexpr uint32_t REPEAT_EVERY_MS = 110;  // ...at this rate; the keys that never decide anything
 constexpr uint32_t TEST_HOLD_MS = 1500;    // hold 1 while waiting for the PC: key test
 constexpr uint32_t TEST_EXIT_MS = 2000;    // hold 8 in key test: leave
 constexpr uint32_t HELLO_EVERY_MS = 3000;

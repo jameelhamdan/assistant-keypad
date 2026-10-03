@@ -125,6 +125,7 @@ def test_mic_button_sends_push_to_talk(kp):
 
 
 def test_host_silence_shows_waiting_then_recovers(kp):
+    kp.host(False)
     kp.wait(8000)
     assert ink(kp.image(), (0, 0, 320, 60)) > 0
     assert any(m["t"] == "hello" for m in kp.tx)   # it keeps announcing itself
@@ -136,3 +137,31 @@ def test_host_silence_shows_waiting_then_recovers(kp):
 def test_arabic_text_is_drawn(kp):
     kp.msg(sc.SCREENS["arabic"])
     assert ink(kp.image(), (10, 10, 310, 60)) > 100
+
+
+def test_holding_down_repeats_the_cursor_but_never_decides(kp):
+    kp.msg({**sc.SCREENS["question"], "id": "q-rep", "items": [f"option {i}" for i in range(1, 11)]})
+    kp.wait(300)
+    kp.hold(8, 1500)
+    assert not presses(kp), "holding a navigation key must not answer"
+    kp.key(7)
+    assert presses(kp)[-1]["idx"] >= 5
+
+
+def test_a_held_number_key_does_not_repeat(kp):
+    kp.msg(sc.SCREENS["permission"])
+    kp.wait(300)
+    kp.hold(1, 1500)
+    assert len(presses(kp)) == 1
+
+
+def test_paused_is_visible_while_working(kp):
+    def warning_pixels():
+        im = kp.image()
+        return sum(1 for x in range(0, 150) for y in range(154, 170)
+                   if (lambda p: p[0] > 200 and 150 < p[1] < 220 and p[2] < 60)(im.getpixel((x, y))))
+
+    kp.msg(sc.status(state="working"))
+    assert warning_pixels() == 0
+    kp.msg(sc.status(state="working", paused=True))
+    assert warning_pixels() > 20

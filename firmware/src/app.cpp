@@ -729,9 +729,24 @@ void appBegin() {
     linkConfigure(stored);
 }
 
+// Holding up/down repeats (moving through a long list or text one press at a time is tedious).
+// Only these two: no other key may ever act twice from one press.
+static void repeatHeldNavigation() {
+    static uint32_t nextAt = 0;
+    if (model.mode != Mode::Status && model.mode != Mode::Screen && model.mode != Mode::Sessions) return;
+    uint32_t now = millis();
+    for (uint8_t k : {KEY_UP, KEY_DOWN}) {
+        if (!inputHeld(k, REPEAT_AFTER_MS) || (int32_t)(now - nextAt) < 0) continue;
+        onKey({k, KeyAction::Press, now, now, true});
+        nextAt = now + REPEAT_EVERY_MS;
+        markDirty();
+    }
+}
+
 bool appLoop() {
     linkPoll();
     inputPoll();
+    repeatHeldNavigation();
     KeyEvent ev;
     while (inputNext(ev)) {
         if (ev.key == KEY_MIC) {

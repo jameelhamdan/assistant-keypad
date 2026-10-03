@@ -5,6 +5,7 @@
 //   down <n> / up <n> press / release key n
 //   turn <steps>      turn the encoder (+ clockwise)
 //   wait <ms>         let simulated time pass
+//   host on|off       the simulated host pings every 2 s (default on); off shows the keypad's "waiting" state
 //   shot <file.ppm>   write the current frame (320x170, binary PPM)
 // Everything the keypad would send to the host is printed as "TX <json>".
 #include <Arduino.h>
@@ -53,7 +54,11 @@ static bool down_[16];
 static uint32_t pressedAt[16];
 void inputBegin() {}
 void inputPoll() {}
-bool inputNext(KeyEvent &ev) { if (qh == qn) return false; ev = q[qh++]; return true; }
+bool inputNext(KeyEvent &ev) {
+    if (qh == qn) { qh = qn = 0; return false; }   // drained: start over
+    ev = q[qh++];
+    return true;
+}
 int32_t inputTakeSteps() { int32_t s = steps; steps = 0; return s; }
 bool inputHeld(uint8_t key, uint32_t ms) { return key < 16 && down_[key] && sim_now - pressedAt[key] >= ms; }
 
@@ -66,10 +71,18 @@ static void push(uint8_t key, KeyAction a) {
 
 
 // ---- frame loop, like main.cpp ----
-static uint32_t lastFrame = 0;
+static uint32_t lastFrame = 0, lastPing = 0;
+static bool hostOn = true;   // plays the host's part: a ping every 2 s ("host off" silences it)
 static void step(uint32_t ms) {
     for (uint32_t t = 0; t < ms; t += 20) {
         sim_now += 20;
+        if (hostOn && sim_now - lastPing >= 2000) {
+            static char ping[] = "{\"t\":\"ping\"}";
+            char buf[32];
+            strcpy(buf, ping);
+            handler(buf, strlen(buf), Src::Usb);
+            lastPing = sim_now;
+        }
         bool changed = appLoop();
         if (changed || sim_now - lastFrame > (uiAnimating(model) ? 120u : 1000u)) { uiRender(model); lastFrame = sim_now; }
     }
@@ -111,6 +124,7 @@ int main() {
                 fclose(f);
             }
             printf("SHOT %s\n", line + 5); fflush(stdout);
+        } else if (!strncmp(line, "host ", 5)) { hostOn = !strcmp(line + 5, "on"); lastPing = sim_now;
         } else if (!strcmp(line, "quit")) break;
     }
     return 0;

@@ -87,6 +87,10 @@ class Sim:
     def hold(self, k: int, ms: int):
         self._cmd(f"key {k} {ms}")
 
+    def host(self, alive: bool):
+        """The simulated host pings every 2 s while alive; silence it to see the keypad lose the host."""
+        self._cmd("host " + ("on" if alive else "off"))
+
     def turn(self, steps: int):
         self._cmd(f"turn {steps}")
 

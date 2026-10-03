@@ -597,7 +597,9 @@ void drawStatus(Model &m) {
     char hint[64];
     snprintf(hint, sizeof(hint), "%s%s%s", st.n > 1 ? "6 sessions  " : "", st.nLog ? "4/8 scroll  " : "",
              st.menu ? "7 send" : "");
-    fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->dim);
+    // Paused must be visible even while the spinner runs: it is the one state where nothing reaches the keypad.
+    if (st.paused) fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, "paused: answers on the PC", T->warning);
+    else fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->dim);
 }
 
 // The session picker (6): which sessions the keypad mirrors, which one it
@@ -633,19 +635,23 @@ void drawSessions(const Model &m) {
         uint16_t c = stateColor(x.state);
         cv->fillCircle(X0 + 5 * MONO.cw + 3, y + 8, 3, c);
         const char *name = x.name[0] ? x.name : x.project[0] ? x.project : x.id;
-        char meta[48];
+        // [title] [project, dim] [state]: the state is never cut, the project gives way first
+        char state[24];
         if (busy(x.state)) {
             char el[16];
             fmtElapsed(el, sizeof(el), millis() - x.startedAt);
-            snprintf(meta, sizeof(meta), "%s  working %s", x.project, el);
+            snprintf(state, sizeof(state), "working %s", el);
         } else {
-            snprintf(meta, sizeof(meta), "%s  %s", x.project, stateWord(x.state));
+            snprintf(state, sizeof(state), "%s", stateWord(x.state));
         }
-        int rcells = utf8Length(meta);
-        if (rcells > 26) rcells = 26;
         bool shown = st.pinned && !strcmp(x.id, st.sel);
-        int16_t rx = 320 - X0 - (shown ? 12 : 0) - rcells * SMALL.cw;
-        fit(SMALL, rx, y + 3, rcells, meta, busy(x.state) || waiting(x.state) ? c : T->dim);
+        int scells = utf8Length(state);
+        int16_t sx = 320 - X0 - (shown ? 12 : 0) - scells * SMALL.cw;
+        fit(SMALL, sx, y + 3, scells, state, busy(x.state) || waiting(x.state) ? c : T->dim);
+        int pcells = utf8Length(x.project);
+        if (pcells > 12) pcells = 12;
+        int16_t rx = sx - (pcells ? (pcells + 1) * SMALL.cw : 0);
+        if (pcells) fit(SMALL, rx, y + 3, pcells, x.project, T->dim);
         int ncells = (rx - (X0 + 7 * MONO.cw) - 4) / MONO.cw;
         fit(MONO, X0 + 7 * MONO.cw, y, ncells, name, cur ? T->claude : T->text, cur);
         if (shown) gCheck(320 - X0 - 10, y, T->success);
@@ -705,13 +711,18 @@ void drawDialog(Model &m) {
     fit(MONO, x, y, cells - iw / MONO.cw - 1, sc.title, c, true);
     y += MONO.line + 3;
 
-    // options take what they need (up to 4 rows), then the question, then the body
+    // options take what they need (4 rows, or all the space a question without a body leaves), then the question, then the body
     int total = multi ? sc.nItems + 1 : sc.nItems;
-    int optRows = total < 4 ? total : 4;
+    int need = sc.q[0] ? textWrap(sc.q, cells * MONO.cw, measureCb, (void *)&MONO, lines, 128) : 0;
+    int maxOpt = 4;
+    if (!sc.body[0]) {
+        int spare = (bottom - 3 - y) / MONO.line - (need < 3 ? need : 3);
+        if (spare > maxOpt) maxOpt = spare;
+    }
+    int optRows = total < maxOpt ? total : maxOpt;
     int16_t optY = bottom - 3 - optRows * MONO.line;
     int qRows = 0;
     if (sc.q[0]) {   // the question gets the rows it needs: up to 2 under a body, 3 without
-        int need = textWrap(sc.q, cells * MONO.cw, measureCb, (void *)&MONO, lines, 128);
         int room = (optY - y) / MONO.line;
         qRows = need < (sc.body[0] ? 2 : 3) ? need : (sc.body[0] ? 2 : 3);
         if (qRows > room) qRows = room;
