@@ -3,6 +3,7 @@
 /build/
 firmware/.pio/
 firmware/.vscode/
+firmware/sim/out/
 # Python
 host/.venv/
 __pycache__/

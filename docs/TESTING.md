@@ -15,7 +15,22 @@ make test
 - `firmware/`: `pio test -e native`: word wrap, glyph sanitising, Arabic shaping and bidi.
 - On boot the firmware checks its HKDF and AES-GCM against the same vector as the host tests (`host/tests/test_secure.py`). On failure it shows *Crypto self-test failed*.
 
-## Without hardware
+## Firmware simulator (no hardware)
+
+`firmware/sim/` compiles the real `app.cpp`, `ui.cpp` and text code for the PC, against stand-ins for the screen, keys and links. Everything drawn and every key press is the firmware's own logic.
+
+```sh
+pio run -e keypad                 # once: fetches the libraries the simulator reuses
+pip install ziglang pillow pytest # a C++ compiler (or set CXX/CC) and the test tools
+python firmware/sim/build.py      # builds firmware/sim/out/keypad-sim
+python firmware/sim/live.py       # open http://127.0.0.1:8765: click or type keys, send host messages
+python firmware/sim/shots.py      # firmware/sim/out/gallery.png: every screen and mode in one image
+python -m pytest firmware/sim -q  # key logic and screens, also run by CI
+```
+
+`live.py` plays the host (pings, hello) so the keypad stays connected, shows what the keypad sends back, and has the example screens of `scenarios.py` in a drop-down. `keypad_sim.Sim` drives it from Python for new tests.
+
+## Without hardware (host side)
 
 ```sh
 KEYPAD_HOME=/tmp/kp host/.venv/bin/keypad agent --fake-device allow   # isolated from your real setup

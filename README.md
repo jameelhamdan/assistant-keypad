@@ -19,6 +19,10 @@ keyboard: number keys pick, up/down move, Enter selects, Esc backs out.
 
 ![A permission request on the keypad](docs/img/permission-dialog.svg)
 
+Every screen, rendered by the real firmware code in the [PC simulator](docs/TESTING.md#firmware-simulator-no-hardware):
+
+![All keypad screens](docs/img/screens.png)
+
 ## Features
 
 - **Your session, mirrored:** the main screen is the terminal tab in miniature: its title, your prompt, Claude's messages, `⏺ Bash(pytest)` tool calls, `✻ Brewing… (1m 12s)` and the permission mode. **4/8** scroll back through the transcript.
@@ -214,7 +218,7 @@ Develop without hardware: `keypad agent --fake-device allow` attaches a simulate
 
 ```
 host/       Python: keypad/{core,device} + agent, tray, hook, MCP server, IPC, settings, installers; tests/
-firmware/   PlatformIO: src/{app,ui,link,input,crypto,ota,store}, src/text (wrapping, Arabic)
+firmware/   PlatformIO: src/{app,ui,link,input,crypto,ota,store}, src/text (wrapping, Arabic); sim/ (PC simulator of the screen and keys)
 proto/      wire protocol
 packaging/  PyInstaller spec, app icon, macOS DMG, Windows installer
 docs/       hardware, security, testing, releasing

@@ -51,6 +51,11 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then V=${GITHUB_REF_NAME#v}; else V=dev-${GITHUB_SHA::7}; fi
           echo "$V" > firmware-version
           PLATFORMIO_BUILD_FLAGS="-DKEYPAD_FW_VERSION=\\\"$V\\\"" pio run -e keypad
+      - name: UI simulator tests (the real firmware UI and key logic, no hardware)
+        run: |
+          pip install ziglang pillow pytest
+          python firmware/sim/build.py
+          python -m pytest firmware/sim -q
       - name: stage (upload-artifact skips hidden folders such as .pio)
         run: |
           mkdir stage
