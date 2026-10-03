@@ -16,7 +16,7 @@ def test_round_trip(home):
     c.shortcuts = [config.Shortcut("Ship it", "Commit and push.")]
     config.save(c)
     raw = yaml.safe_load(config.config_path().read_text())
-    assert raw["behavior"]["max_continues"] == 7 and raw["behavior"]["pc_handback"]["enabled"] is True
+    assert raw["behavior"]["max_continues"] == 7 and raw["behavior"]["pc_handback"]["enabled"] is False
     back, err = config.load()
     assert err is None and back == c
 

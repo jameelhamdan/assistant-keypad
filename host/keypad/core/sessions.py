@@ -45,7 +45,7 @@ class Session:
     turn: float = 0.0  # when the current stretch of work began (the keypad's elapsed timer)
     last: float = field(default_factory=time.time)
     name: str = ""  # the session's title, as on its terminal tab
-    mode: str = ""  # Claude Code's permission mode (acceptEdits, plan, bypassPermissions; "" = default)
+    mode: str = ""  # Claude Code's permission mode (default, acceptEdits, plan, auto, dontAsk, bypassPermissions; "" = not seen yet)
     log: list[dict[str, str]] = field(default_factory=list)  # latest transcript lines, oldest first
     seen: set[str] = field(default_factory=set, repr=False)  # transcript message ids already in log
     inflight: int = field(default=0, repr=False)  # tool calls (main + subagents) currently running
@@ -272,7 +272,7 @@ class Sessions:
 
     def set_mode(self, sid: str, mode: str) -> None:
         with self._lock:
-            self._get(sid).mode = "" if mode == "default" else mode
+            self._get(sid).mode = mode
 
 
 def wire(sessions: list[Session], allow: Callable[[str], bool] | None = None) -> list[dict[str, Any]]:

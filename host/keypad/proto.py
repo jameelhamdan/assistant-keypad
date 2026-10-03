@@ -30,7 +30,7 @@ MIC_ACTS = ("start", "stop")  # push-to-talk: hold the mic button to talk, relea
 
 # Text buffers on the keypad (firmware/src/model.h), in bytes without the NUL.
 # Text is fitted to these so it is never cut inside a UTF-8 character there.
-SESSION_PROJECT, SESSION_NAME, SESSION_TITLE, SESSION_DETAIL, SESSION_MODE = 39, 39, 63, 239, 15
+SESSION_PROJECT, SESSION_NAME, SESSION_TITLE, SESSION_DETAIL, SESSION_MODE = 39, 39, 63, 239, 23
 LOG_TEXT, LOG_USER_TEXT, LOG_CLAUDE_TEXT = 203, 2000, 8000  # per transcript entry, by kind
 LOG_POOL = 12000  # all transcript text together (the keypad's buffer is 12288 bytes)
 SCREEN_TITLE, SCREEN_PROJECT, SCREEN_BODY, SCREEN_Q, SCREEN_ITEM, SCREEN_NOTE = 127, 39, 1399, 127, 63, 47

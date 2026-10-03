@@ -85,11 +85,19 @@ def cmd_service(args: list[str]) -> None:
 
 def cmd_status(args: list[str]) -> None:
     s = call("GET", "/status")
-    live = {k["id"]: f"{k['link']} {k['addr']}" for k in s["keypads"]}
-    rows = [("KEYPAD", "NAME", "CONNECTION", "PAIRED")]
-    rows += [(d["id"], d["name"], live.get(d["id"], "offline"), str(d["paired"]).lower()) for d in s["devices"]]
+    live = {k["id"]: k for k in s["keypads"]}
+    rows = [("KEYPAD", "NAME", "CONNECTION", "PAIRED HERE", "KEYPAD SAYS")]
+    mismatch = False
+    for d in s["devices"]:
+        k = live.get(d["id"])
+        says = "-" if k is None else str(k["paired"]).lower()
+        mismatch |= k is not None and k["paired"] != d["paired"]
+        rows.append((d["id"], d["name"], f"{k['link']} {k['addr']}" if k else "offline", str(d["paired"]).lower(), says))
     print(f"host id  {s['host_id']}\npaused   {str(s['paused']).lower()}\n")
     _table(rows)
+    if mismatch:
+        print("\nThis computer and the keypad disagree about pairing (it was paired from another computer, or "
+              "this one lost its key). Tray -> your keypad -> Set up Wi-Fi… (over USB) fixes it.")
     print()
     _table([("SESSION", "PROJECT", "STATE", "DETAIL")] +
            [(x["id"][:8], x["project"], x["state"], f"{x['title']} {x['detail']}") for x in s["sessions"]])

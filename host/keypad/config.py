@@ -52,7 +52,7 @@ class Shortcut:
 
 @dataclass
 class Handback:
-    enabled: bool = True
+    enabled: bool = False  # typing or moving the mouse at the PC would otherwise pull every request off the keypad
 
 
 @dataclass

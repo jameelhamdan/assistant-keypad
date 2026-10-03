@@ -14,7 +14,7 @@ It runs on a LILYGO T-Display S3 with a 2×4 key matrix and a rotary encoder
 The screen is a small Claude Code: the session's transcript (`> prompt`,
 `⏺` messages and tool calls, `⎿` results, `✻ Brewing… (12s)`), its
 permission dialogs with the `❯` cursor and numbered options, and the
-permission mode (`⏵⏵ accept edits on`). The keys work like Claude Code's
+permission mode (`⏵⏵ accept edits on`). The bottom right shows the session's permission mode, like Claude Code's status line: `manual`, `⏵⏵ accept edits on`, `plan mode on`, `auto mode on`, `bypass permissions on`. The keys work like Claude Code's
 keyboard: number keys pick, up/down move, Enter selects, Esc backs out.
 
 ![A permission request on the keypad](docs/img/permission-dialog.svg)
@@ -26,7 +26,7 @@ keyboard: number keys pick, up/down move, Enter selects, Esc backs out.
 - **Permissions, like Claude Code:** *1. Yes*, *2. Yes, and don't ask again for …* (when Claude Code offers a rule; picking it saves that rule, exactly as in the terminal) and *3. No*.
 - **Questions:** Claude's `AskUserQuestion` (single or multi-select) and the `ask_user` MCP tool, with the same numbered list and cursor.
 - **When Claude finishes:** the transcript stays on screen with numbered options below it: *continue* and your saved prompts; **5** leaves it to the PC.
-- **Hand-back to the PC:** start typing on the computer and the pending request goes back to the normal Claude Code prompt. **5** (Esc) does the same.
+- **Hand-back to the PC:** **5** (Esc) sends the pending request back to the normal Claude Code prompt. Optionally (Options → *Hand back to the PC when I type there*, off by default) typing or moving the mouse at the computer does the same.
 - **Dark and light themes:** set per keypad, or follow the computer's appearance.
 - **Wi-Fi:** pair over USB once. After that it works anywhere on the LAN, encrypted, with no conflicts between keypads or PCs.
 - **Arabic / RTL text** is shaped and laid out right-to-left on the device.
@@ -100,7 +100,7 @@ Keep working in Claude Code as usual. The keypad follows along and asks you when
 | Claude finished (only when you've been away from the computer, 1 minute by default) | the transcript, then **1** continue and your saved prompts; **5** stops there. **4** scrolls back through Claude's message |
 
 - A long command or plan: press **4** on the first option to scroll the text; **8** comes back to the options. Enter never decides while you're reading.
-- **Answer on the PC instead:** press **5**, or just start typing on the computer. The request goes back to Claude Code's normal prompt.
+- **Answer on the PC instead:** press **5** (or, with *Hand back to the PC when I type there* on, just start typing). The request goes back to Claude Code's normal prompt.
 - **The screen dims** after a minute without a key press, and lights up fully when Claude needs you. The first key press on a dim screen only wakes it.
 - **Sessions are remembered** when Keypad restarts, transcripts included (kept, already redacted, in `sessions.json` in Keypad's data folder, readable only by you).
 - Requests from all sessions wait in line, one at a time. The dialog shows its project, how many more wait (`+1`) and a countdown before the PC takes over.
@@ -217,7 +217,7 @@ host/       Python: keypad/{core,device} + agent, tray, hook, MCP server, IPC, s
 firmware/   PlatformIO: src/{app,ui,link,input,crypto,ota,store}, src/text (wrapping, Arabic)
 proto/      wire protocol
 packaging/  PyInstaller spec, app icon, macOS DMG, Windows installer
-docs/       hardware, security, testing
+docs/       hardware, security, testing, releasing
 ```
 
 ## Where things live

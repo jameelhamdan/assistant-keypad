@@ -75,6 +75,9 @@ def test_timeout_falls_back(env):
 
 def test_handback_on_pc_input(env):
     e = env(None)
+    cfg = config.Config()
+    cfg.behavior.pc_handback.enabled = True  # off by default
+    e.a.set_config(cfg)
     e.idle = 0  # the user keeps typing at the PC
     start = time.time()
     assert e.hook("PermissionRequest", {"tool_name": "Bash"}) == {}
@@ -213,7 +216,7 @@ def test_permission_mode_mirrored(env):
     e.hook("UserPromptSubmit", {"prompt": "hi", "permission_mode": "acceptEdits"})
     wait_status(e, lambda st: st["sessions"] and st["sessions"][0].get("mode") == "acceptEdits")
     e.hook("PreToolUse", {"tool_name": "Read", "permission_mode": "default"})
-    wait_status(e, lambda st: st["sessions"] and "mode" not in st["sessions"][0])
+    wait_status(e, lambda st: st["sessions"] and st["sessions"][0].get("mode") == "default")
 
 
 def test_snapshot_marks_sessions_on_the_keypad(env):

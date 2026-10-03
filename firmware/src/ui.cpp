@@ -308,16 +308,22 @@ void gPlay(int16_t x, int16_t y, uint16_t c) {
 }
 
 uint16_t modeColor(const char *mode) {
+    if (!strcmp(mode, "default")) return T->dim;   // manual: every action asks
     if (!strcmp(mode, "plan")) return T->info;
     if (!strcmp(mode, "bypassPermissions")) return T->error;
-    return T->permission;   // acceptEdits
+    return T->permission;   // acceptEdits, auto, dontAsk
 }
 
+// What Claude Code's status line says; a mode this firmware doesn't know is shown as sent.
 const char *modeLabel(const char *mode) {
+    if (!mode[0]) return nullptr;
+    if (!strcmp(mode, "default")) return "manual";
     if (!strcmp(mode, "acceptEdits")) return "accept edits on";
     if (!strcmp(mode, "plan")) return "plan mode on";
+    if (!strcmp(mode, "auto")) return "auto mode on";
+    if (!strcmp(mode, "dontAsk")) return "don't ask on";
     if (!strcmp(mode, "bypassPermissions")) return "bypass permissions on";
-    return nullptr;
+    return mode;
 }
 
 // A note (the last press, or a toast) replaces the hint line for a moment.

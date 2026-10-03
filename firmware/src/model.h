@@ -16,7 +16,7 @@ struct SessionInfo {
     char state[16];
     char title[64];
     char detail[240];
-    char mode[16];        // Claude Code permission mode: "", acceptEdits, plan, bypassPermissions
+    char mode[24];        // Claude Code permission mode: "" (unknown), default, acceptEdits, plan, auto, dontAsk, bypassPermissions
     uint32_t startedAt;   // millis() estimate from `since`
 };
 

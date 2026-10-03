@@ -72,7 +72,7 @@ off.
 ```
 
 `name` is the session's title (as on its terminal tab), `mode` Claude Code's
-permission mode when it isn't the default (`acceptEdits`, `plan`,
+permission mode (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`,
 `bypassPermissions`). `log` mirrors the selected session's transcript, oldest
 first: `u` the user's prompt (≤ 2000 bytes), `c` Claude's text (whole, ≤ 8000
 bytes), `t` a tool call, `r` an outcome. Claude's Markdown arrives styled:
