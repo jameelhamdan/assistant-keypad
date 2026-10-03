@@ -75,6 +75,22 @@ def icon_image(rgb: tuple[int, int, int], mode: str = "sessions"):
     return img
 
 
+def tray_look(s: dict) -> tuple[str, tuple[int, int, int]]:
+    """The icon's three states: no keypad (or paused) -> "off"; a keypad
+    but no sessions -> "ready"; sessions -> colored by what they're doing."""
+    sessions = s.get("sessions", [])
+    if s.get("paused") or not s.get("keypads"):
+        return "off", COL_OFF
+    if not sessions:
+        return "ready", COL_IDLE
+    states = {x.get("state") for x in sessions}
+    if s.get("busy") or states & WAITING_STATES:
+        return "sessions", COL_WAITING
+    if states & WORKING_STATES:
+        return "sessions", COL_WORKING
+    return "sessions", COL_IDLE
+
+
 def tray_lock() -> bool:
     """False if another tray already runs for this user."""
     if sys.platform == "win32":
@@ -172,7 +188,7 @@ def latest_release() -> str:
 
 def state_word(state: str) -> str:
     """A session's state in a word, as the keypad's session list shows it.
-    This and _look_for below duplicate by hand the state taxonomy in
+    This and tray_look below duplicate by hand the state taxonomy in
     core/sessions.py (BUSY_STATES/WAITING_STATES/WORKING_STATES) and
     firmware/src/ui.cpp (busy()/waiting()/stateColor()/stateWord()); a new
     state needs updating in all of them."""
@@ -331,7 +347,7 @@ class Tray:
         except (ipc.AgentNotRunning, ipc.RequestError):
             snap, cfg, ok = {}, self.cfg, False
         self.snap, self.cfg, self.ok = snap, cfg, ok
-        look = self._look_for(snap) if ok else ("off", COL_OFF)
+        look = tray_look(snap) if ok else ("off", COL_OFF)
         if look != self._color:
             self._color = look
             img = icon_image(look[1], look[0])
@@ -374,21 +390,6 @@ class Tray:
             button.setTitle_(" " + text if text else "")
         except Exception:  # pystray internals: losing the text must not break the tray
             pass
-
-    def _look_for(self, s: dict) -> tuple[str, tuple[int, int, int]]:
-        """The icon's three states: no keypad (or paused) -> "off"; a keypad
-        but no sessions -> "ready"; sessions -> colored by what they're doing."""
-        sessions = s.get("sessions", [])
-        if s.get("paused") or not s.get("keypads"):
-            return "off", COL_OFF
-        if not sessions:
-            return "ready", COL_IDLE
-        states = {x.get("state") for x in sessions}
-        if s.get("busy") or states & WAITING_STATES:
-            return "sessions", COL_WAITING
-        if states & WORKING_STATES:
-            return "sessions", COL_WORKING
-        return "sessions", COL_IDLE
 
     def _head(self) -> str:
         if not self.ok:

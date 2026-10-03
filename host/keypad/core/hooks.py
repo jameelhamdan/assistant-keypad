@@ -185,6 +185,8 @@ class HookMixin:
             log_line(LOG_RESULT, "Error: " + first_line(redact(s(p, "error"))))
             touch(WORKING, "Working", tool_name(tool) + " failed: " + redact(s(p, "error")))
         elif event == "PermissionRequest":
+            if tool == "AskUserQuestion":  # the question itself is asked on the keypad (PreToolUse); allowing the tool is no decision
+                return {}
             sugg = p.get("permission_suggestions")
             return self.permission(ctx, sid, cwd, pids, tool, inp, s(p, "agent_type"), sugg if isinstance(sugg, list) else [])
         elif event == "Stop":

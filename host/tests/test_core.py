@@ -22,6 +22,13 @@ def test_permission_allow(env):
     assert s["body"] == "go test ./..." and s["q"] == "Do you want to proceed?"
 
 
+def test_ask_user_question_needs_no_permission_screen(env):
+    e = env(press_label("Yes"))
+    e.hook("SessionStart", {})
+    out = e.hook("PermissionRequest", {"tool_name": "AskUserQuestion", "tool_input": {"questions": []}})
+    assert out == {} and e.fake.last_screen() is None
+
+
 def test_permission_dont_ask_again(env):
     e = env(lambda s: {"key": 2, "act": "pick", "idx": 1})  # number key 2
     out = e.hook("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "go test ./..."},

@@ -2,7 +2,7 @@
 #   make setup       create the Python environment (host/.venv, needs uv)
 #   make test        host + firmware unit tests
 #   make firmware    build the keypad firmware (PlatformIO)
-#   make flash       flash it over USB (quit Keypad first: it holds the port)
+#   make flash       flash it over USB (quit Keypad first if it holds the port)
 #   make mac         Keypad.app + DMG (macOS)
 #   Windows:         packaging\windows\build.ps1 -Version x.y.z
 

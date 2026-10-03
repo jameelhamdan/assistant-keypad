@@ -303,7 +303,7 @@ class Hub:
             old = self._conns.get(c.id)
             if old and old.link.kind == "usb" and c.link.kind == "wifi" and not self.wifi_only():
                 return False  # USB wins while plugged in
-            if old and old.link.kind == "wifi" and c.link.kind == "usb" and self.wifi_only() and old.id == c.id:
+            if old and old.link.kind == "wifi" and c.link.kind == "usb" and self.wifi_only():
                 return False  # Wi-Fi only: a cable adds power, not a second link
             self._conns[c.id] = c
         if old:

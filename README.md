@@ -2,8 +2,8 @@
 
 A small hardware keypad for [Claude Code](https://claude.com/claude-code): see
 what Claude is doing on a color screen, and allow or deny tool use, answer
-questions, or tell it to keep going, with one press. It works over USB or
-Wi-Fi, on macOS and Windows, across all your open Claude Code sessions (up to
+questions, or tell it to keep going, with one press. It talks to the computer
+over Wi-Fi (the USB cable is for power, setup and flashing), on macOS and Windows, across all your open Claude Code sessions (up to
 32 tracked at once, 8 shown on a keypad).
 
 It runs on a LILYGO T-Display S3 with a 2×4 key matrix and a rotary encoder
@@ -55,7 +55,7 @@ Keypad now starts at login and shows a small keypad icon in the menu bar (macOS)
 2. **Restart** any Claude Code sessions that are already open, so they load the hooks.
 3. **Plug the keypad in** with a USB-C cable. Within a few seconds it switches from *Waiting for your computer* to the status screen, and the tray lists it. Then pair it for Wi-Fi (see [Pair for Wi-Fi](#pair-for-wi-fi)): from then on the cable is only power and firmware flashing.
 
-**First flash:** a new keypad needs the firmware once, over USB: quit Keypad from the tray, then run `make flash` (PlatformIO). After that, firmware updates come from the tray: your keypad → **Update firmware**.
+**First flash:** a new keypad needs the firmware once, over USB: run `make flash` (PlatformIO). If Keypad has the port (an unpaired keypad, or *Wi-Fi only* off), quit it from the tray first. After that, firmware updates come from the tray: your keypad → **Update firmware**.
 
 ## Update
 
@@ -201,7 +201,7 @@ make setup           # host/.venv with every dependency (uv sync)
 make test            # host tests (pytest) + firmware unit tests (native)
 make lint            # ruff
 make firmware        # build the firmware
-make flash           # flash over USB (quit Keypad first: it holds the port)
+make flash           # flash over USB (once paired, Keypad leaves the port alone)
                      # pio run -e keypad-debug -t upload: logs keys, accepts simulated presses
 make mac             # dist/Keypad.app + DMG
 ```

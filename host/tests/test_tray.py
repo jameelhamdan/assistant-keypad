@@ -19,12 +19,11 @@ def test_latest_release_skips_dev_builds(monkeypatch):
 
 
 def test_icon_looks_for_the_three_states():
-    from keypad.tray import COL_IDLE, COL_OFF, COL_WORKING, Tray
+    from keypad.tray import COL_IDLE, COL_OFF, COL_WORKING, tray_look
 
-    look = Tray._look_for
     kp = [{"id": "kp-1"}]
-    assert look(None, {"keypads": []}) == ("off", COL_OFF)  # disconnected
-    assert look(None, {"keypads": kp, "paused": True, "sessions": [{"state": "working"}]}) == ("off", COL_OFF)
-    assert look(None, {"keypads": kp, "sessions": []}) == ("ready", COL_IDLE)  # available, no sessions
-    assert look(None, {"keypads": kp, "sessions": [{"state": "working"}]}) == ("sessions", COL_WORKING)
-    assert look(None, {"keypads": kp, "sessions": [{"state": "idle"}]}) == ("sessions", COL_IDLE)
+    assert tray_look({"keypads": []}) == ("off", COL_OFF)  # disconnected
+    assert tray_look({"keypads": kp, "paused": True, "sessions": [{"state": "working"}]}) == ("off", COL_OFF)
+    assert tray_look({"keypads": kp, "sessions": []}) == ("ready", COL_IDLE)  # available, no sessions
+    assert tray_look({"keypads": kp, "sessions": [{"state": "working"}]}) == ("sessions", COL_WORKING)
+    assert tray_look({"keypads": kp, "sessions": [{"state": "idle"}]}) == ("sessions", COL_IDLE)
