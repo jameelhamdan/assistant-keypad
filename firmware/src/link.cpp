@@ -212,6 +212,7 @@ void linkBegin(MessageHandler h, const char *deviceId) {
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(deviceId);
     WiFi.setAutoReconnect(true);
+    WiFi.setSleep(false);   // modem sleep (the default) delays or drops packets: the link looks dead while idle
 }
 
 void linkConfigure(const Stored &st) {
@@ -224,6 +225,7 @@ void linkConfigure(const Stored &st) {
     if (st.ssid[0]) {
         WiFi.mode(WIFI_STA);
         WiFi.begin(st.ssid, st.pass);
+        WiFi.setSleep(false);
         wifiStartedAt = millis();
         wifi.state = WifiState::Connecting;
     }

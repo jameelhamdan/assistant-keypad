@@ -37,12 +37,13 @@ constexpr uint8_t KEY_UP = 4, KEY_DOWN = 8, KEY_ESC = 5, KEY_SESSIONS = 6, KEY_E
 constexpr uint8_t DIRECT_PICKS = 3;              // keys 1..3 pick options 1..3
 
 // ---- Microphone button ------------------------------------------------------------
-// A ninth button for push-to-talk: hold to talk, release to stop. NOT WIRED YET:
-// the pin is -1, so the firmware never reads it. Set MIC_PIN to the GPIO of a
-// switch to ground (INPUT_PULLUP) to enable it; the keypad then sends
-// {"t":"mic","act":"start"|"stop"} to the host (proto/PROTOCOL.md). Capturing audio
-// from an I2S microphone is a later step.
-constexpr int8_t MIC_PIN = -1;
+// A ninth button for push-to-talk: hold to talk, release to stop. GPIO14 is the
+// free pin that is also the board's right-hand button, so it works before you
+// wire anything (button to GND, INPUT_PULLUP). Set -1 to turn it off. The keypad
+// sends {"t":"mic","act":"start"|"stop"} to the host (proto/PROTOCOL.md); capturing
+// audio is a later step. For an I2S microphone (INMP441 and similar) GPIO10, 11 and 12
+// are free on the header (BCLK / WS / DATA); GPIO13 is spare. Nothing else uses them.
+constexpr int8_t MIC_PIN = 14;
 constexpr uint8_t KEY_MIC = 9;                   // key id of the mic button in KeyEvent
 
 constexpr int ENC_SW_PIN = 1;

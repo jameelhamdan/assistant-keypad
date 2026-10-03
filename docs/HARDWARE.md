@@ -15,7 +15,8 @@ LILYGO **T-Display S3** (ESP32-S3, 16 MB flash, 8 MB PSRAM, 1.9" 170×320 ST7789
 | 39–42, 45–48 | LCD D0–D7 |
 | 4 | battery voltage (1:2 divider) |
 | 19, 20 | native USB, the serial link |
-| `MIC_PIN` (-1) | push-to-talk mic button, switch to ground (`INPUT_PULLUP`). **Not wired:** set `MIC_PIN` in `config.h` to enable it; it sends `{"t":"mic","act":"start"\|"stop"}` and the host only logs it for now |
+| 14 | mic button (push-to-talk), button to GND with `INPUT_PULLUP`; also the board's right-hand button, so it works unwired. Sends `{"t":"mic","act":"start"\|"stop"}`; the host only logs it for now. `MIC_PIN = -1` turns it off |
+| 10, 11, 12 | reserved for an I2S microphone (BCLK, WS, DATA); 13 is spare |
 
 GPIO43/44 are UART0 when "USB CDC on boot" is off, so the firmware refuses to build without `ARDUINO_USB_CDC_ON_BOOT=1` (set in `platformio.ini`).
 

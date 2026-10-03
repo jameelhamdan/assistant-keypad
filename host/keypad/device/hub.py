@@ -202,7 +202,8 @@ class Hub:
             while True:
                 try:
                     b = link.recv()
-                except Exception:
+                except Exception as e:
+                    self.log.info("link lost kind=%s addr=%s: %s", link.kind, link.addr, e)
                     b = None
                 while not quit_.is_set():  # never block forever once serve() is gone
                     try:
@@ -276,7 +277,7 @@ class Hub:
                 self._handle(c, m)
             if now >= next_ping:
                 if now - last_rx > DEAD_AFTER:
-                    self.log.info("keypad timed out id=%s", c.id)
+                    self.log.info("keypad timed out id=%s link=%s (no traffic for %.0fs)", c.id, c.link.kind, DEAD_AFTER)
                     return
                 c.send({"t": "ping"})
                 next_ping = now + PING_EVERY

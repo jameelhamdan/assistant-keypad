@@ -83,7 +83,7 @@ Keep working in Claude Code as usual. The keypad follows along and asks you when
 | **5** | Esc: back, or leave the request to the PC |
 | **6** | the session list |
 | encoder | turn = up/down, click = Esc (a stray knob press never decides anything) |
-| mic *(optional ninth button)* | push-to-talk: hold to talk, release to stop. **Not wired yet:** the firmware and host already handle it (`MIC_PIN` in `firmware/include/config.h`, [protocol](proto/PROTOCOL.md)), but no audio is captured |
+| mic *(optional ninth button)* | push-to-talk: hold to talk, release to stop. On GPIO14 (the board's right-hand button, or your own button to GND); the firmware and host handle it ([protocol](proto/PROTOCOL.md)), but no audio is captured yet |
 
 **Main screen.** The session you're working in, like its terminal tab: the title, your last prompt, Claude's messages, the tools it runs and `✻ Brewing… (12s)` while it works. **4/8** scroll back through the transcript; **5** jumps back to the newest line (and to the latest activity, if you had picked a session). With saved prompts, **7** sends one to the shown session.
 

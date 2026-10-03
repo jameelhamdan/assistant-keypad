@@ -203,7 +203,7 @@ class Agent(HookMixin):
         """The mic button (push-to-talk): held = talking. The button is
         programmed end to end but nothing consumes it yet; this is where voice
         input to the shown session plugs in once audio is wired."""
-        self.log.info("mic %s on %s (not wired: no audio is captured)", "start" if talking else "stop", c.id)
+        self.log.info("mic %s on %s (no audio is captured yet)", "start" if talking else "stop", c.id)
 
     # ---- shortcuts ----
 
