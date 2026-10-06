@@ -29,3 +29,11 @@ def test_hook_without_agent_prints_empty_object(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b'{"session_id":"s"}')))
     assert hook.run_hook(["Stop"]) == 0
     assert capsys.readouterr().out == "{}"
+
+
+def test_a_blocking_hook_waits_for_the_configured_timeout_plus_a_margin(home):
+    assert hook.blocking_timeout() == 300 + hook.GRACE  # no config yet: the default
+    (home / "config.json").write_text('{"behavior": {"timeout": 60}}')
+    assert hook.blocking_timeout() == 60 + hook.GRACE
+    (home / "config.json").write_text("{broken")
+    assert hook.blocking_timeout() == 300 + hook.GRACE

@@ -10,10 +10,9 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from . import agent_cmd, claudecfg, config, dialog, ipc, osutil, service
-from .core.sessions import WAITING_STATES, WORKING_STATES
+from . import agent_cmd, claudecfg, config, dialog, ipc, osutil, service, trayos
 from .core.text import clip
-from .paths import in_app_bundle, self_path
+from .dirs import in_app_bundle, self_path
 from .version import version
 
 # The keypad's palette: Claude orange = working, permission blue = waiting
@@ -72,37 +71,16 @@ def tray_look(s: dict) -> tuple[str, tuple[int, int, int]]:
         return "off", COL_OFF
     if not sessions:
         return "ready", COL_IDLE
-    states = {x.get("state") for x in sessions}
-    if s.get("busy") or states & WAITING_STATES:
+    phases = {x.get("phase") for x in sessions}
+    if s.get("busy") or phases & {"asking", "stopped"}:
         return "sessions", COL_WAITING
-    if states & WORKING_STATES:
+    if phases & {"working", "continuing"}:
         return "sessions", COL_WORKING
     return "sessions", COL_IDLE
 
 
-def tray_lock() -> bool:
-    """False if another tray already runs for this user."""
-    if sys.platform == "win32":
-        import ctypes
-
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        tray_lock.handle = k32.CreateMutexW(None, False, service.TRAY_MUTEX)  # type: ignore[attr-defined]  # held for life
-        return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
-    import fcntl
-
-    config.data_dir().mkdir(parents=True, exist_ok=True)
-    f = open(config.data_dir() / "tray.lock", "w")  # noqa: SIM115 - kept open (and locked) for the process lifetime
-    try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        f.close()
-        return False
-    tray_lock.handle = f  # type: ignore[attr-defined]
-    return True
-
-
 def run_tray(quiet: bool = False) -> None:
-    if not tray_lock():
+    if not trayos.tray_lock():
         # Already running (e.g. the app was opened again): point at it. The login task starts
         # Keypad every minute with --quiet, and says nothing while it runs.
         if not quiet:
@@ -146,17 +124,9 @@ def _set_path(d: dict, path: tuple[str, ...], v: Any) -> None:
     d[path[-1]] = v
 
 
-def state_word(state: str) -> str:
-    """A session's state in a word, as the keypad's session list shows it.
-    This and tray_look below duplicate by hand the state taxonomy in
-    core/sessions.py (BUSY_STATES/WAITING_STATES/WORKING_STATES) and
-    firmware/src/ui.cpp (busy()/waiting()/stateColor()/stateWord()); a new
-    state needs updating in all of them."""
-    if state in WORKING_STATES:
-        return "working"
-    if state in WAITING_STATES:
-        return "needs you"
-    return "failed" if state == "failed" else "idle"
+def state_word(phase: str) -> str:
+    """A session's phase in a word, as the keypad's session list shows it."""
+    return {"working": "working", "continuing": "working", "asking": "needs you", "stopped": "needs you"}.get(phase, "idle")
 
 
 def session_label(x: dict) -> str:
@@ -201,30 +171,9 @@ class Tray:
         # returns -- a plain Lock would self-deadlock there.
         self._win_ui_lock = threading.RLock()
         self.icon = pystray.Icon("Keypad", icon_image(COL_OFF), "Keypad", menu=pystray.Menu(self._items))
-        if sys.platform == "win32":
-            self._guard_win32_menu()
+        trayos.guard_win32_menu(self.icon, self._win_ui_lock)
 
     # ---- plumbing ----
-
-    def _guard_win32_menu(self) -> None:
-        """pystray's win32 backend has no locking around its native menu
-        handle: update_menu() (called off the UI thread by poll_once/refresh)
-        destroys the old HMENU and installs a new one, while a real click is
-        dispatched on the message-loop thread straight into _on_notify, which
-        reads that same handle and calls TrackPopupMenuEx on it. A poll
-        landing mid-click can have one thread destroy the handle the other is
-        about to show a popup with, crashing the process with no Python
-        traceback. Serialize both sides behind one lock via on_main()."""
-        icon = self.icon
-        orig_on_notify = icon._on_notify
-
-        def locked_on_notify(wparam, lparam):
-            with self._win_ui_lock:
-                return orig_on_notify(wparam, lparam)
-
-        for code, handler in list(icon._message_handlers.items()):
-            if getattr(handler, "__func__", None) is orig_on_notify.__func__:
-                icon._message_handlers[code] = locked_on_notify
 
     def run(self) -> None:
         if sys.platform == "darwin":  # a menu bar app: no Dock icon, even when not run from the .app bundle
@@ -238,19 +187,7 @@ class Tray:
         threading.Thread(target=self._poll, daemon=True).start()
 
     def on_main(self, fn: Callable[[], None]) -> None:
-        """AppKit may only be touched from the main thread; pystray doesn't
-        ensure it. On Windows, pystray's menu/icon/title updates and its own
-        click handler touch the same native handles with no locking (see
-        _guard_win32_menu) -- route them through the same lock here."""
-        if sys.platform == "darwin":
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(fn)
-        elif sys.platform == "win32":
-            with self._win_ui_lock:
-                fn()
-        else:
-            fn()
+        trayos.on_main(fn, self._win_ui_lock)
 
     def refresh(self) -> None:
         self.on_main(self.icon.update_menu)
@@ -302,7 +239,7 @@ class Tray:
             showing, bar = self._showing(), self._bar_text()
             tip = "Keypad: " + self._head() + (f"\n{showing}" if showing else "")
             self.on_main(lambda: setattr(self.icon, "title", tip))
-            self.on_main(lambda: self._set_bar_text(bar))
+            self.on_main(lambda: trayos.set_bar_text(self.icon, bar))
             self.refresh()
         return ok
 
@@ -322,18 +259,6 @@ class Tray:
             return ""
         n = len(synced(self.snap))
         return clip(x.get("project") or x["id"][:8], 16) + (f" {i}/{n}" if n > 1 else "")
-
-    def _set_bar_text(self, text: str) -> None:
-        if sys.platform != "darwin":
-            return  # the Windows notification area has no text; the tooltip carries it
-        try:
-            import AppKit
-
-            button = self.icon._status_item.button()
-            button.setImagePosition_(AppKit.NSImageLeft)
-            button.setTitle_(" " + text if text else "")
-        except Exception:  # pystray internals: losing the text must not break the tray
-            pass
 
     def _head(self) -> str:
         if not self.ok:
@@ -377,23 +302,17 @@ class Tray:
         k = live.get(d["id"])
         dev_id, name = d["id"], d.get("name") or d["id"]
         if k:
-            how = {"usb": "USB", "wifi": "Wi-Fi", "fake": "simulated"}.get(k["link"], k["link"])
+            how = {"usb": "USB", "wifi": "Wi-Fi"}.get(k["link"], k["link"])
             if k.get("battery", -1) >= 0:
                 how += f" · {k['battery']}%"
         else:
             how = "offline"
             if why := (self.snap.get("problems") or {}).get(dev_id):
                 how = "can't connect: " + why
-        patch = lambda body: self.act(lambda: call("PATCH", f"/devices/{dev_id}", body))  # noqa: E731
-        bright = [Item(f"{b}%", patch({"brightness": b}), checked=lambda _, b=b: b - 12 <= d.get("brightness", 80) < b + 13,
-                       radio=True) for b in (25, 50, 75, 100)]
         prog = self.progress.get(dev_id)
         sub = [
-            Item("Brightness", Menu(*bright)),
-            Item("Identify", self.act(lambda: call("POST", f"/devices/{dev_id}/identify")), enabled=bool(k)),
             Item("Rename…", self.act(lambda: self.rename(dev_id, name), True)),
-            self.pystray.Menu.SEPARATOR,
-            Item("Change Wi-Fi…" if d.get("paired") else "Set up Wi-Fi…", self.act(lambda: self.pair(dev_id, name), True),
+            Item("Change Wi-Fi…" if d.get("paired") else "Set up Wi-Fi…", self.act(self.add_keypad, True),
                  enabled=bool(k and k["link"] == "usb")),
             Item(f"Updating… {prog}%" if prog is not None else "Update firmware",
                  self.act(lambda: self.update_firmware(dev_id, name), True), enabled=bool(k) and prog is None),
@@ -413,7 +332,7 @@ class Tray:
         head = f"Sessions on the keypad: {len(on)}" + (f" · {follow}" if on else "")
         out = [Item(head, None, enabled=False)]
         for x in sessions[:10]:
-            label = f"{session_label(x)} · {state_word(x.get('state', ''))}"
+            label = f"{session_label(x)} · {state_word(x.get('phase', ''))}"
             if not x.get("on_keypad"):
                 label += " · not on the keypad"
             out.append(Item(label, self.act(lambda sid=x["id"]: call("POST", "/session", {"id": sid})),
@@ -459,9 +378,15 @@ class Tray:
 
     def edit_config(self, fn: Callable[[dict], None]) -> None:
         """Changes the agent's settings (read, modify, write back)."""
-        c = call("GET", "/config")
-        fn(c)
-        call("PUT", "/config", c)
+        for attempt in (1, 2):  # the PUT names the revision it started from: someone else's edit is not overwritten
+            c = call("GET", "/config")
+            fn(c)
+            try:
+                call("PUT", "/config", c)
+                return
+            except ipc.RequestError as e:
+                if attempt == 2 or "changed elsewhere" not in str(e):
+                    raise
 
     def welcome(self) -> None:
         """Once, the first time an agent is reachable: offer to connect
@@ -476,11 +401,11 @@ class Tray:
                 "Connect", "Not now"):
             self._install_claude()
         dialog.notify("Keypad is running",
-                      f"Plug in your keypad with USB. Everything else is in the keypad icon in the {tray_place()}.")
+                      f"To add a keypad: plug it in with USB, then use Add keypad… in the keypad icon in the {tray_place()}.")
 
     def _install_claude(self) -> None:
         cfg, _ = config.load()
-        claudecfg.install(self.bin, cfg.behavior.max_continues)
+        claudecfg.install(self.bin, cfg.behavior)
         self.claude_ok = claudecfg.check(self.bin).installed
         dialog.notify("Claude Code connected", "Restart any open Claude Code sessions to use the keypad.")
 
@@ -506,9 +431,6 @@ class Tray:
         """Opens the pairing page in the browser: it finds a keypad plugged in with USB and sets up its Wi-Fi."""
         osutil.open_path(call("GET", "/pair-url", timeout=10)["url"])
 
-    def pair(self, dev_id: str, name: str) -> None:
-        self.add_keypad()
-
     def rename(self, dev_id: str, name: str) -> None:
         v = dialog.input("Rename keypad", f"A name for {dev_id}, shown on its screen.", "Name", name)
         if v:
@@ -523,7 +445,7 @@ class Tray:
         """Installs the bundled firmware, showing progress in the menu."""
         fw = call("GET", "/firmware")
         if not fw["bundled"]:
-            dialog.alert("Update firmware", f"This build of Keypad has no bundled firmware. Use: keypad update {dev_id} <firmware.bin>")
+            dialog.alert("Update firmware", "This build of Keypad has no bundled firmware. Flash the keypad over USB (make flash).")
             return
         if not dialog.confirm("Update firmware", f"Install firmware {fw['version']} on {name}? It takes about a minute; "
                               "keep the keypad connected. It restarts when done.", "Update", "Cancel"):

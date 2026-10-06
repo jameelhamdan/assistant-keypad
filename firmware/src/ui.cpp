@@ -49,19 +49,15 @@ uint16_t tone(Tone t) {
     }
 }
 
-// This state taxonomy is spelled out in host/keypad/core/sessions.py (the
-// state sets), host/keypad/tray.py (state_word) and here (busy, stateWord,
-// waiting). host/tests/test_states.py fails when they drift apart.
-bool busy(const char *s) {
-    return !strcmp(s, "working") || !strcmp(s, "thinking") || !strcmp(s, "tool") || !strcmp(s, "continuing");
-}
+// The session states are the words the host sends (host/keypad/core/sessions.py PHASES;
+// host/tests/test_states.py checks that this file uses no other).
+bool busy(const char *s) { return !strcmp(s, "working") || !strcmp(s, "continuing"); }
+bool waiting(const char *s) { return !strcmp(s, "asking"); }   // a request is on screen or queued
 
 uint16_t stateColor(const char *s) {
     if (busy(s)) return T->claude;
-    if (!strcmp(s, "permission") || !strcmp(s, "question") || !strcmp(s, "input") || !strcmp(s, "stopped")) return T->permission;
-    if (!strcmp(s, "failed")) return T->error;
-    if (!strcmp(s, "idle") || !strcmp(s, "done")) return T->success;
-    return T->dim;
+    if (waiting(s) || !strcmp(s, "stopped")) return T->permission;
+    return T->success;
 }
 
 // ---- terminal grid ---------------------------------------------------------------------------
@@ -347,18 +343,11 @@ void gElbowS(int16_t x, int16_t y, uint16_t c) {
     cv->drawFastHLine(x + 2, y + 6, 4, c);
 }
 
-// Session states in a word, for the picker. See the cross-reference comment
-// on busy() above: this and waiting() are the other two copies of the state
-// taxonomy that have to stay in sync with it.
+// Session states in a word, for the picker.
 const char *stateWord(const char *s) {
     if (busy(s)) return "working";
-    if (!strcmp(s, "permission") || !strcmp(s, "question") || !strcmp(s, "input") || !strcmp(s, "stopped")) return "needs you";
-    if (!strcmp(s, "failed")) return "failed";
+    if (waiting(s) || !strcmp(s, "stopped")) return "needs you";
     return "idle";
-}
-
-bool waiting(const char *s) {
-    return !strcmp(s, "permission") || !strcmp(s, "question") || !strcmp(s, "input");
 }
 
 // ---- the transcript, wrapped once per change ----------------------------------------

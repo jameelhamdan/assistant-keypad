@@ -26,15 +26,14 @@ CloseApplications=yes
 Source: "..\..\dist\Keypad\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
-; files from an older build that the new one no longer has
+; the runtime folder is replaced, not merged
 Type: filesandordirs; Name: "{app}\_internal"
-Type: files; Name: "{app}\keypad-hook.exe"
 
 [Icons]
 Name: "{group}\Keypad"; Filename: "{app}\keypadw.exe"; Parameters: "tray"
 
 [Run]
-; Stop an older agent, then register the hooks and start at login (starts Keypad now).
+; Register the hooks and start at login (starts Keypad now).
 Filename: "{app}\keypad.exe"; Parameters: "install"; Flags: runhidden waituntilterminated; StatusMsg: "Connecting Claude Code..."
 
 [UninstallRun]
@@ -45,9 +44,9 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
 begin
-  // Keypad relaunches itself every minute through its login task. Switch that off and stop the
-  // running copy first, so no file is in use while the new one is copied (keypad install turns
-  // the task back on afterwards).
+  // Keypad's login task restarts it when it is killed. Switch the task off and stop the running
+  // copy first, so no file is in use while the new one is copied (keypad install turns the task
+  // back on afterwards).
   Exec('schtasks.exe', '/Change /TN "Keypad" /DISABLE', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Exec('schtasks.exe', '/End /TN "Keypad"', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Exec('taskkill.exe', '/F /IM keypadw.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);

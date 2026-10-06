@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from .. import config, proto
 from .ctx import Ctx
 from .dialogs import Dialog, DialogError, Dialogs
-from .hooks import HookMixin
+from .hooks import Hooks
 from .sessions import (
     BUSY_STATES,
     CONTINUING,
@@ -34,23 +34,14 @@ if TYPE_CHECKING:
     from ..device.hub import Conn, Hub
 
 
+SHORTCUT_TTL = 900  # s a queued saved prompt waits for the session's next hook
 POLL_EVERY = 0.3  # s between looks at the sessions' transcripts
 DISCOVER_WITHIN = 900  # s: transcripts touched this recently belong to sessions already running when the agent starts
 # states in which new transcript lines may change the shown state (not while a request waits on someone)
 FOLLOWABLE = {IDLE, DONE, THINKING, WORKING, TOOL, CONTINUING}
 
 
-def feed_added(prev: list[dict[str, str]], cur: list[dict[str, str]]) -> tuple[int, list[dict[str, str]]] | None:
-    """How cur follows prev: (the number of oldest entries prev lost, the entries
-    added), or None when cur is not prev moved along (send all of it)."""
-    for drop in range(len(prev)):
-        keep = prev[drop:]
-        if cur[: len(keep)] == keep:
-            return drop, cur[len(keep):]
-    return None
-
-
-class Agent(HookMixin):
+class Agent:
     def __init__(self, cfg: config.Config, store: config.Store, log: logging.Logger, presence: Callable[[], tuple[float, bool]] | None = None):
         self.log = log
         self.presence = presence  # seconds since any input at the PC (None = unknown: treated as away)
@@ -59,14 +50,21 @@ class Agent(HookMixin):
         self.sessions = Sessions()
         self._cfg_lock = threading.Lock()
         self._cfg = cfg
+        self._rev = 1  # bumped on every change of the settings (a client's edit must start from the current one)
         self._paused = False
         self._dirty = threading.Event()
         self._pend_lock = threading.Lock()
         self._pending: dict[str, tuple[config.Shortcut, float]] = {}
         self.dialogs = Dialogs(self, log)
+        self._hooks = Hooks(self)
         self.dialogs.on_change = self.mark_dirty
         self._tails: dict[str, Tail] = {}
+        self._unreadable: set[str] = set()  # sessions whose transcript could not be understood (logged once)
         self._tail_lock = threading.Lock()
+
+    def hook(self, ctx: Ctx, event: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Claude Code's hook decision; {} means none."""
+        return self._hooks.hook(ctx, event, payload)
 
     # ---- settings ----
 
@@ -74,10 +72,19 @@ class Agent(HookMixin):
         with self._cfg_lock:
             return self._cfg.copy()
 
-    def set_config(self, c: config.Config) -> None:
+    def config_rev(self) -> int:
         with self._cfg_lock:
+            return self._rev
+
+    def set_config(self, c: config.Config, rev: int | None = None) -> bool:
+        """Replaces the settings. With rev, only when nobody changed them since that revision."""
+        with self._cfg_lock:
+            if rev is not None and rev != self._rev:
+                return False
             self._cfg = c.copy()
+            self._rev += 1
         self.mark_dirty()
+        return True
 
     def away(self, seconds: int) -> bool:
         """Whether nobody has used the PC for `seconds` (true when unknown)."""
@@ -85,6 +92,11 @@ class Agent(HookMixin):
             return True
         idle, ok = self.presence()
         return not ok or idle >= seconds
+
+    def presence_view(self) -> dict[str, Any]:
+        """Whether you are at the PC, as `away` sees it (shown by `keypad status`)."""
+        idle, ok = self.presence() if self.presence else (0.0, False)
+        return {"known": True, "idle": int(idle)} if ok else {"known": False}
 
     def paused(self) -> bool:
         return self._paused
@@ -132,6 +144,7 @@ class Agent(HookMixin):
     def forget(self, sid: str) -> None:
         with self._tail_lock:
             self._tails.pop(sid, None)
+        self._unreadable.discard(sid)
 
     def sync(self, only: str = "") -> None:
         """Reads what the sessions' transcripts gained since last time (all of
@@ -147,6 +160,10 @@ class Agent(HookMixin):
                 first, before = not tail.seen, tail.activity
                 entries = tail.poll()
                 moved = tail.activity - before
+            if not tail.readable() and x.id not in self._unreadable:
+                self._unreadable.add(x.id)
+                self.log.warning("the transcript of session %s is not in a format Keypad knows (%d lines, no messages): "
+                                 "its feed stays empty", short(x.id), tail.lines)
             if tail.title:
                 self.sessions.set_name(x.id, tail.title)
             if tail.mode:
@@ -227,32 +244,21 @@ class Agent(HookMixin):
             self.push_feed(c, sel, next((x.log for x in live if short(x.id) == sel), []))
 
     def push_feed(self, c: Conn, sel: str, log: list[dict[str, str]]) -> None:
-        """Brings a keypad's transcript up to date: only what is new (and how many
-        of the oldest entries to drop), or all of it when the session changed."""
-        # The oldest entries go until the text fits the keypad's buffer.
+        """Gives a keypad the transcript of the selected session, when it changed."""
+        # The oldest entries go until the text fits the keypad's buffer and the message the protocol limit.
         while log and sum(len(x["t"].encode()) + 1 for x in log) > proto.LOG_POOL:
             log = log[1:]
-        prev = c.feed
-        if prev and prev[0] == sel and prev[1] == log:
+        if c.feed == (sel, log):
             return
-        msg: dict[str, Any] = {"t": "feed", "sid": sel}
-        added = feed_added(prev[1], log) if prev and prev[0] == sel else None
-        if added is not None:
-            msg["drop"], msg["add"] = added
-        else:
-            msg["full"] = log
-        while True:  # and the oldest go until the message fits the protocol limit
+        while True:
+            msg = {"t": "feed", "sid": sel, "full": log}
             try:
                 proto.encode(msg)
                 break
             except proto.InvalidMessage:
-                if "full" not in msg:  # too big as a delta: send all of it instead
-                    msg = {"t": "feed", "sid": sel, "full": log}
-                elif msg["full"]:
-                    log = log[1:]
-                    msg["full"] = log
-                else:
+                if not log:
                     return
+                log = log[1:]
         if c.send(msg):
             c.feed = (sel, log)
 
@@ -300,7 +306,7 @@ class Agent(HookMixin):
         cur = self.sessions.get(self.shown_id())
         if not cur:
             return
-        ctx = Ctx.background().with_timeout(30)
+        ctx = Ctx().with_timeout(30)
 
         def fn(d: Dialog) -> None:
             p = d.show(ctx, {**self.shortcut_screen("Send to Claude", [], [], "back"), "project": cur.project})
@@ -332,7 +338,7 @@ class Agent(HookMixin):
     def take_pending(self, sid: str) -> config.Shortcut | None:
         with self._pend_lock:
             p = self._pending.pop(sid, None)
-        if not p or time.monotonic() - p[1] > self.config().behavior.shortcut_ttl:
+        if not p or time.monotonic() - p[1] > SHORTCUT_TTL:
             return None
         return p[0]
 
@@ -359,12 +365,13 @@ class Agent(HookMixin):
         for x in live:
             v = x.view()
             v["on_keypad"] = short(x.id) in on
+            v["feed_ok"] = x.id not in self._unreadable
             sessions.append(v)
         return {
             "host_id": self.store.host_id(), "paused": self.paused(), "busy": self.dialogs.busy(),
             "queue": self.dialogs.queued(), "keypads": [c.info() for c in conns],
             "devices": [d.view() for d in self.store.devices()], "problems": dict(self.hub.problems) if self.hub else {},
             "sessions": sessions,
-            "current": self.shown_id(), "pinned": self.sessions.pinned(),
+            "presence": self.presence_view(), "current": self.shown_id(), "pinned": self.sessions.pinned(),
             "shortcuts": self.shortcut_labels(),
         }

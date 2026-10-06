@@ -92,3 +92,15 @@ def test_activity_counts_only_real_conversation_lines(tmp_path):
         f.write(user([{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]))
     t.poll()
     assert t.activity == 1  # a tool returned: the request was answered somewhere
+
+
+def test_a_transcript_in_an_unknown_format_is_reported_unreadable(tmp_path):
+    p = tmp_path / "s.jsonl"
+    p.write_text("".join(json.dumps({"kind": "msg", "n": i}) + "\n" for i in range(30)))
+    t = T.Tail(str(p))
+    t.poll()
+    assert not t.readable()
+    p.write_text(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
+    t2 = T.Tail(str(p))
+    t2.poll()
+    assert t2.readable()

@@ -19,7 +19,7 @@ from .proto import VERSION
 KEY_SIZE = 32
 NONCE_SIZE = 16
 MAX_FRAME = 4096
-INFO = b"keypad v2"
+INFO = b"keypad v3"
 
 
 class SecureError(Exception):

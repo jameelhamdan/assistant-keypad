@@ -1,17 +1,16 @@
 import threading
 import time
 
+import fakekeypad as fakemod
+
 from keypad import config
-from keypad.device import fake as fakemod
 from keypad.device.hub import Hub
 
 
 def test_usb_is_only_scanned_for_setup(home):
     store = config.Store("h-1", [])
     hub = Hub(store, ev=None)
-    assert hub.usb_wanted()  # nothing paired yet: first setup needs the cable
-    store.update("kp-1", lambda d: setattr(d, "key", "k" * 64))
-    assert not hub.usb_wanted()  # paired: the cable is only power
+    assert not hub.usb_wanted()  # no pairing page open: the cable is only power, another board is left alone
     hub.open_pairing()
     assert hub.usb_wanted()  # Add keypad… opens a window
 
@@ -112,7 +111,7 @@ def test_a_cable_on_an_already_connected_keypad_is_not_reopened_in_a_loop(home, 
     monkeypatch.setattr(hubmod, "UsbLink", open_usb)
     assert hub._claim("usb:COM9")
     hub._serve_usb("COM9")
-    wait_until = hub._quiet.get("COM9", (0, 0.0))[1]
+    wait_until = hub._quiet.get("COM9", 0.0)
     assert wait_until > time.monotonic() + 30, "the port should be left alone for a while"
     wifi.close()
 

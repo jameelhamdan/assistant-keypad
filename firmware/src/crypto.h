@@ -9,7 +9,7 @@
 
 constexpr size_t GCM_TAG = 16;
 
-// okm = HKDF-SHA256(psk, salt = nonceHost || nonceDevice, "keypad v2", 64)
+// okm = HKDF-SHA256(psk, salt = nonceHost || nonceDevice, "keypad v3", 64)
 bool deriveKeys(const uint8_t psk[32], const uint8_t nonceHost[16], const uint8_t nonceDevice[16],
                 uint8_t h2d[32], uint8_t d2h[32]);
 

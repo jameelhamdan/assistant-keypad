@@ -1,53 +1,30 @@
 """Installs and removes the keypad's Claude Code integration: command hooks in
-~/.claude/settings.json. Only entries that run our
-own binary are ever touched, and every write is preceded by a backup."""
+~/.claude/settings.json. Only entries that run our own binary are ever touched,
+and every write is preceded by a backup."""
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
-import subprocess
-import sys
 import time
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import osutil
-from .config import write_atomic
-from .paths import env_without_bundle
+from .config import Behavior, write_atomic
 
-# Blocking hooks wait for a key press; the agent enforces the real timeout
-# (at most 3600 s), so Claude Code must never cut them off first.
-BLOCKING_TIMEOUT = 3630
+# Blocking hooks wait for a key press; the agent enforces the configured timeout, so
+# Claude Code only cuts a hook off this long after it (a hung agent, not a slow answer).
+GRACE = 30
 QUICK_TIMEOUT = 15
-MCP_NAME = "keypad"
 KEEP_BACKUPS = 5
 
-# event -> (timeout, tool matcher). The hooks only decide; the live feed comes from the transcript.
+# event -> (waits for a key press, tool matcher). The hooks only decide; the live feed comes from the transcript.
 # PreToolUse is only for AskUserQuestion, so the hook does not start on every tool call.
 EVENTS = {
-    "SessionStart": (QUICK_TIMEOUT, ""), "SessionEnd": (QUICK_TIMEOUT, ""), "UserPromptSubmit": (QUICK_TIMEOUT, ""),
-    "PreToolUse": (BLOCKING_TIMEOUT, "AskUserQuestion"), "PermissionRequest": (BLOCKING_TIMEOUT, ""),
-    "Stop": (BLOCKING_TIMEOUT, ""),
+    "SessionStart": (False, ""), "SessionEnd": (False, ""), "UserPromptSubmit": (False, ""),
+    "PreToolUse": (True, "AskUserQuestion"), "PermissionRequest": (True, ""), "Stop": (True, ""),
 }
-
-
-def find_claude() -> str:
-    """The claude CLI ("" = edit ~/.claude.json directly). Background agents
-    get a minimal PATH, so the usual install locations are searched as well."""
-    if p := shutil.which("claude"):
-        return p
-    home_ = Path.home()
-    if sys.platform == "win32":
-        cands = [home_ / ".local" / "bin" / "claude.exe", Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd",
-                 Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "claude-code" / "claude.exe"]
-    else:
-        cands = [home_ / ".local" / "bin" / "claude", home_ / ".claude" / "local" / "claude",
-                 Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")]
-    return next((str(c) for c in cands if c.is_file()), "")
 
 
 def home() -> Path:
@@ -61,12 +38,6 @@ def settings_path() -> Path:
     return home() / "settings.json"
 
 
-def claude_json() -> Path:
-    if d := os.environ.get("CLAUDE_CONFIG_DIR"):
-        return Path(d) / ".claude.json"
-    return Path.home() / ".claude.json"
-
-
 @dataclass
 class Status:
     hooks: int = 0  # number of our hook entries
@@ -78,9 +49,6 @@ class Status:
     @property
     def installed(self) -> bool:
         return self.hooks == self.expected and not self.stale
-
-    def to_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "installed": self.installed}
 
 
 def _read_settings() -> dict[str, Any]:
@@ -127,7 +95,7 @@ def _ours(h: Any) -> str | None:
     if not isinstance(cmd, str) or not isinstance(args, list) or not args or args[0] != "hook":
         return None
     name = Path(cmd.replace("\\", "/")).name.lower().removesuffix(".exe")
-    return cmd if name in ("keypad", "keypad-hook") else None
+    return cmd if name == "keypad" else None
 
 
 def _strip(hooks: dict[str, Any]) -> None:
@@ -149,22 +117,21 @@ def _strip(hooks: dict[str, Any]) -> None:
             del hooks[ev]
 
 
-def install(binary: str, max_continues: int) -> None:
-    """Adds hooks for binary (and drops the MCP server older versions registered).
-    max_continues raises
-    Claude Code's own Stop-hook block cap to the same number."""
+def install(binary: str, behavior: Behavior) -> None:
+    """Adds hooks for binary. The settings' max_continues raises Claude Code's own Stop-hook
+    block cap to the same number, and its timeout sets how long a hook may wait."""
     m = _read_settings()
     hooks = m.get("hooks") if isinstance(m.get("hooks"), dict) else {}
     _strip(hooks)
-    for ev, (timeout, matcher) in EVENTS.items():
-        entry = {"type": "command", "command": binary, "args": ["hook", ev], "timeout": timeout}
+    for ev, (waits, matcher) in EVENTS.items():
+        entry = {"type": "command", "command": binary, "args": ["hook", ev],
+                 "timeout": behavior.timeout + GRACE if waits else QUICK_TIMEOUT}
         hooks.setdefault(ev, []).append({**({"matcher": matcher} if matcher else {}), "hooks": [entry]})
     m["hooks"] = hooks
     env = m.get("env") if isinstance(m.get("env"), dict) else {}
-    env["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] = str(max_continues)
+    env["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] = str(behavior.max_continues)
     m["env"] = env
     _write_settings(m)
-    _unregister_mcp()  # older versions registered an MCP server
 
 
 def uninstall() -> None:
@@ -179,7 +146,6 @@ def uninstall() -> None:
         if not m["env"]:
             del m["env"]
     _write_settings(m)
-    _unregister_mcp()
 
 
 def check(binary: str) -> Status:
@@ -197,40 +163,3 @@ def check(binary: str) -> Status:
                     if cmd != binary:
                         st.stale = True
     return st
-
-
-# ---- cleanup of the MCP server older versions registered (user scope, in ~/.claude.json) ----
-
-
-def _run(args: list[str]) -> subprocess.CompletedProcess:
-    return osutil.run(args, timeout=60, env=env_without_bundle())
-
-
-def _unregister_mcp() -> None:
-    try:
-        registered = MCP_NAME in (json.loads(claude_json().read_text(encoding="utf-8")).get("mcpServers") or {})
-    except (OSError, ValueError, AttributeError):
-        registered = False
-    if not registered:
-        return
-    if c := find_claude():
-        _run([c, "mcp", "remove", "--scope", "user", MCP_NAME])
-        return
-    _edit_claude_json(lambda servers: servers.pop(MCP_NAME, None))
-
-
-def _edit_claude_json(fn: Callable[[dict], Any]) -> None:
-    p = claude_json()
-    m: dict[str, Any] = {}
-    if p.exists():
-        raw = p.read_bytes()
-        try:
-            m = json.loads(raw)
-        except ValueError as e:
-            raise RuntimeError(f"{p} is not valid JSON: {e}") from e
-        write_atomic(p.with_name(p.name + ".keypad-backup"), raw, 0o600)
-    servers = m.get("mcpServers") if isinstance(m.get("mcpServers"), dict) else {}
-    fn(servers)
-    m["mcpServers"] = servers
-    # Claude Code rewrites this file often: replace it in one step.
-    write_atomic(p, json.dumps(m, indent=2, ensure_ascii=False).encode(), 0o600)

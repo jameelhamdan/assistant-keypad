@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
-import os
 import queue
 import threading
 import time
@@ -123,8 +122,8 @@ def explain_refusal(why: str) -> str:
 class Hub:
     def __init__(self, store: config.Store, ev: Events, host_name: str = "", log: logging.Logger | None = None):
         self.store, self.ev = store, ev
-        # USB is only for setup (pairing). The agent doesn't open the port (so a
-        # flasher can have it) unless setup is under way.
+        # USB is only for setup (pairing). The agent doesn't open a port (so a flasher can
+        # have it, and another ESP32 board is not reset by a probe) unless setup is under way.
         self._pairing_until = 0.0  # monotonic time until which USB is scanned for pairing
         self.host_name = host_name
         self.log = log or logging.getLogger("keypad")
@@ -135,31 +134,28 @@ class Hub:
         self._dial_after: dict[str, float] = {}  # keypad id -> earliest next attempt (backoff while it keeps dropping)
         self.problems: dict[str, str] = {}  # keypad id -> why it cannot connect (shown in the tray)
         self._busy: set[str] = set()  # USB ports, dial and update jobs in progress
-        # USB ports that didn't speak the protocol (another ESP32 board shares the
-        # vendor id): failures in a row and when to try again. Opening a port
-        # toggles DTR, which can reset such a board, so don't keep poking it.
-        self._quiet: dict[str, tuple[int, float]] = {}
+        # USB ports to leave alone until a time: a board that isn't a keypad (another ESP32 board
+        # shares the vendor id) or a keypad already on Wi-Fi. Opening a port toggles DTR, which resets it.
+        self._quiet: dict[str, float] = {}
 
     # ---- supervision ----
 
     def open_pairing(self, seconds: float = 300) -> None:
-        """Scans USB for a while even in Wi-Fi-only mode (Add keypad…)."""
+        """Scans USB for a while (Add keypad…; the pairing page keeps renewing it)."""
         self._pairing_until = time.monotonic() + seconds
 
     def usb_wanted(self) -> bool:
-        """Whether to open USB ports now: only while pairing, or while no keypad
-        has been paired yet (first setup)."""
-        return time.monotonic() < self._pairing_until or not any(d.key for d in self.store.devices())
+        """Whether to open USB ports now: only while a pairing page is open."""
+        return time.monotonic() < self._pairing_until
 
     def run(self, stop: threading.Event) -> None:
         """Scans USB, browses mDNS and dials paired keypads until stop is set."""
         self.disc.start()
         last_dial: dict[str, float] = {}
-        no_usb = os.environ.get("KEYPAD_NO_USB") == "1"  # development: force the Wi-Fi path
         try:
             while not stop.is_set():
-                for port, dev_id in [] if no_usb or not self.usb_wanted() else usb_devices():
-                    if time.monotonic() < self._quiet.get(port, (0, 0.0))[1]:
+                for port, dev_id in usb_devices() if self.usb_wanted() else []:
+                    if time.monotonic() < self._quiet.get(port, 0.0):
                         continue
                     if dev_id and (c := self.get(dev_id)) and c.live:
                         continue  # already connected over Wi-Fi: opening its port would reboot it
@@ -198,18 +194,11 @@ class Hub:
             return
         try:
             started = time.monotonic()
-            if self.serve(link):
-                self._quiet.pop(port, None)
-                if time.monotonic() - started < 3:
-                    # a keypad that is already connected over Wi-Fi: the cable is only power. Do not
-                    # reopen the port every few seconds (opening it can reset the board).
-                    self._quiet[port] = (0, time.monotonic() + 60)
-            else:  # no keypad there: back off 0, 0, 30, 60 ... up to 300 s
-                n = self._quiet.get(port, (0, 0.0))[0] + 1
-                wait = 0 if n < 3 else min(300, 30 * (n - 2))
-                self._quiet[port] = (n, time.monotonic() + wait)
-                if wait:
-                    self.log.info("USB port %s doesn't answer as a keypad; next try in %d s", port, wait)
+            answered = self.serve(link)
+            if time.monotonic() - started < 3:  # not a keypad, or one that is already connected over Wi-Fi
+                if not answered:
+                    self.log.info("USB port %s doesn't answer as a keypad", port)
+                self._quiet[port] = time.monotonic() + (60 if answered else 30)
         finally:
             self._release("usb:" + port)
 

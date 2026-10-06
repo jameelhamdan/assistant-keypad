@@ -26,7 +26,6 @@ INTERRUPT = "i"  # you stopped Claude: not shown, but the session is no longer w
 class Entry:
     kind: str
     text: str
-    uuid: str = ""
     tool: str = ""  # TOOL entries: the tool's name
     detail: str = ""  # TOOL entries: its one-line summary
 
@@ -48,28 +47,27 @@ def parse(e: dict[str, Any]) -> list[Entry]:
     if e.get("isSidechain") or e.get("isMeta"):
         return []
     msg = e.get("message") if isinstance(e.get("message"), dict) else {}
-    uid = s(e, "uuid")
     out: list[Entry] = []
     if e.get("type") == "user":
         for b in _blocks(msg.get("content")):
             if b.get("type") == "text" and (t := s(b, "text").strip()):
                 if t.startswith("[Request interrupted"):
-                    out.append(Entry(INTERRUPT, t, uid))
+                    out.append(Entry(INTERRUPT, t))
                 elif not _is_synthetic(t):
-                    out.append(Entry(USER, redact(t), uid))
+                    out.append(Entry(USER, redact(t)))
             elif b.get("type") == "tool_result" and b.get("is_error"):
                 body = b.get("content")
                 text = " ".join(s(x, "text") for x in _blocks(body)) if not isinstance(body, str) else body
-                out.append(Entry(RESULT, "Error: " + first_line(redact(text)), uid))
+                out.append(Entry(RESULT, "Error: " + first_line(redact(text))))
     elif e.get("type") == "assistant":
         for b in _blocks(msg.get("content")):
             if b.get("type") == "text" and (t := s(b, "text").strip()):
-                out.append(Entry(CLAUDE, redact(t), uid))
+                out.append(Entry(CLAUDE, redact(t)))
             elif b.get("type") == "tool_use" and s(b, "name"):
                 name = s(b, "name")
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 detail = summarize(name, inp)
-                out.append(Entry(TOOL, f"{tool_name(name)}({detail})", uid, name, detail))
+                out.append(Entry(TOOL, f"{tool_name(name)}({detail})", name, detail))
     return out
 
 
@@ -99,6 +97,12 @@ class Tail:
         self.mode = ""  # permission mode
         self.seen = False  # whether anything was ever read
         self.activity = 0  # lines of the main conversation read so far (anything new means Claude moved on)
+        self.lines = self.conversation = 0  # JSON lines read, and how many of them were user/assistant messages
+
+    def readable(self) -> bool:
+        """False when plenty of lines were read but none is a conversation message: the file's
+        format is not the one this parser knows (Claude Code changed it), so the feed stays empty."""
+        return self.conversation > 0 or self.lines < 20
 
     def _lines(self, b: bytes) -> list[Entry]:
         out: list[Entry] = []
@@ -111,6 +115,8 @@ class Tail:
                 continue
             if not isinstance(e, dict):
                 continue
+            self.lines += 1
+            self.conversation += e.get("type") in ("user", "assistant")
             if e.get("type") == "ai-title" and s(e, "aiTitle"):
                 self.title = s(e, "aiTitle")[:60]
             if not e.get("isSidechain"):

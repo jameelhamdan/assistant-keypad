@@ -12,6 +12,7 @@ import sys
 # Events whose hook may wait for a key press (PreToolUse only for AskUserQuestion).
 BLOCKING = {"PermissionRequest", "Stop"}
 QUICK_TIMEOUT = 10  # everything else answers at once; never let a stuck agent stall Claude Code
+GRACE = 20  # a blocking hook gives up this long after the agent's own timeout
 
 
 def _clip(s: str, n: int) -> str:
@@ -59,6 +60,18 @@ def slim(p: dict) -> dict:
     return out
 
 
+def blocking_timeout() -> float:
+    """How long to wait for the keypad: the agent's configured timeout (config.json) plus a margin."""
+    try:
+        from .dirs import data_dir
+
+        with open(data_dir() / "config.json", encoding="utf-8") as f:
+            t = int(json.load(f)["behavior"]["timeout"])
+    except (OSError, ValueError, KeyError, TypeError):
+        t = 300
+    return min(max(t, 10), 3600) + GRACE
+
+
 def run_hook(args: list[str]) -> int:
     out: object = {}
     try:
@@ -70,7 +83,7 @@ def run_hook(args: list[str]) -> int:
 
                 req = {"event": event, "payload": slim(payload)}
                 waits = event in BLOCKING or (event == "PreToolUse" and payload.get("tool_name") == "AskUserQuestion")
-                timeout = 3600 + 20 if waits else QUICK_TIMEOUT
+                timeout = blocking_timeout() if waits else QUICK_TIMEOUT
                 reply = ipc.request("POST", "/hook", req, timeout=timeout)
                 if isinstance(reply, dict):
                     out = reply

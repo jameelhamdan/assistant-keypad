@@ -74,6 +74,7 @@ class PairPage:
                 self._srv = None
 
     def state(self) -> dict[str, Any]:
+        self.hub.open_pairing()  # an open page keeps USB scanned
         s = self.a.snapshot()
         return {"keypads": [{k: c.get(k) for k in ("id", "name", "link", "addr")} for c in s["keypads"]],
                 "problem": next(iter(s.get("problems", {}).values()), "")}

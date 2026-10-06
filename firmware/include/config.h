@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #ifndef KEYPAD_FW_VERSION
-#define KEYPAD_FW_VERSION "2.0.0-dev"   // release builds pass the tag (Makefile, CI)
+#define KEYPAD_FW_VERSION "dev"   // release builds pass the tag (Makefile, CI)
 #endif
 
 constexpr int PROTOCOL_VERSION = 3;

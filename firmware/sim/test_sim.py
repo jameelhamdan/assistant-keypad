@@ -172,13 +172,12 @@ def test_session_list_selects_a_session(kp):
     assert s and s[-1]["act"] == "select" and s[-1]["sid"] in ("aaaa0001", "bbbb0002")
 
 
-def test_feed_appends_and_drops_oldest_entries(kp):
+def test_feed_replaces_the_transcript_and_keeps_the_newest_entries(kp):
     kp.msg(sc.status(log=[]))
     sid = sc.SESSION["id"]
-    for i in range(45):  # more than the keypad keeps: the oldest go, the newest stay on screen
-        kp.msg({"t": "feed", "sid": sid, "drop": 1 if i >= 32 else 0, "add": [{"k": "c", "t": f"entry number {i}"}]})
+    kp.msg({"t": "feed", "sid": sid, "full": [{"k": "c", "t": f"entry number {i}"} for i in range(45)]})  # more than the keypad keeps
     assert ink(kp.image(), (0, 60, 320, 150)) > 100
-    kp.msg({"t": "feed", "sid": "someone-else", "add": [{"k": "c", "t": "not this session"}]})  # ignored
+    kp.msg({"t": "feed", "sid": "someone-else", "full": [{"k": "c", "t": "not this session"}]})  # ignored
     kp.msg({"t": "feed", "sid": sid, "full": []})
     assert ink(kp.image(), (0, 60, 320, 120)) < 400  # an empty transcript: just the welcome box
 

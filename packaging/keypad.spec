@@ -13,12 +13,11 @@ HOST = os.path.join(ROOT, "host")
 VERSION = os.environ.get("KEYPAD_VERSION", "dev").lstrip("v")
 ICON = os.environ.get("KEYPAD_ICON")  # .icns / .ico made by packaging/mkicon.py
 
-# keypad.device.fake is the development keypad that answers requests by itself: never shipped
-hidden = [m for m in collect_submodules("keypad") if m != "keypad.device.fake"] + collect_submodules("zeroconf") + ["pystray._darwin" if sys.platform == "darwin" else "pystray._win32"]
+hidden = collect_submodules("keypad") + collect_submodules("zeroconf") + ["pystray._darwin" if sys.platform == "darwin" else "pystray._win32"]
 datas = [(os.path.join(HOST, "keypad", "data"), "keypad/data")]
 
 a = Analysis([os.path.join(SPECPATH, "entry.py")], pathex=[HOST], datas=datas, hiddenimports=hidden,
-             excludes=["tkinter", "pytest", "setuptools", "pkg_resources", "keypad.device.fake"], noarchive=False)
+             excludes=["tkinter", "pytest", "setuptools", "pkg_resources"], noarchive=False)
 pyz = PYZ(a.pure)
 
 common = dict(debug=False, strip=False, upx=False, icon=ICON, exclude_binaries=True,
