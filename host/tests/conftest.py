@@ -2,12 +2,12 @@ import logging
 import threading
 import time
 
+import fakekeypad
 import pytest
 
 from keypad import config
 from keypad.core.agent import Agent
 from keypad.core.ctx import Ctx
-from keypad.device import fake as fakemod
 from keypad.device.hub import Hub
 
 SID = "sess-0001-aaaa"
@@ -25,7 +25,7 @@ class Env:
         threading.Thread(target=self.a.run, args=(self.stop,), daemon=True).start()
         self.fake = None
         if connect:
-            self.fake = fakemod.Fake("kp-000001", policy)
+            self.fake = fakekeypad.Fake("kp-000001", policy)
             threading.Thread(target=self.hub.serve, args=(self.fake,), daemon=True).start()
             deadline = time.time() + 2
             while not self.hub.conns():
@@ -35,7 +35,7 @@ class Env:
     def hook(self, event, p):
         p.setdefault("session_id", SID)
         p.setdefault("cwd", "/work/money-mind")
-        return self.a.hook(Ctx.background(), event, p)
+        return self.a.hook(Ctx(), event, p)
 
     def close(self):
         self.stop.set()
@@ -54,7 +54,7 @@ def home(tmp_path, monkeypatch):
 def env(home):
     made = []
 
-    def make(policy=fakemod.first_key, connect=True):
+    def make(policy=fakekeypad.first_key, connect=True):
         e = Env(policy, connect)
         made.append(e)
         return e

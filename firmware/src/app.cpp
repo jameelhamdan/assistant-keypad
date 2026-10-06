@@ -200,18 +200,12 @@ void appendLog(StatusModel &st, JsonObjectConst l) {
     st.nLog++;
 }
 
-// {"t":"feed","sid":..,"full":[entries]} replaces the transcript;
-// {"t":"feed","sid":..,"drop":n,"add":[entries]} drops the n oldest entries and appends.
+// {"t":"feed","sid":..,"full":[entries]} replaces the transcript.
 void applyFeed(JsonDocument &doc) {
     StatusModel &st = model.status;
     if (!st.logText || strcmp(doc["sid"] | "", st.sel) != 0) return;   // not the session on screen
-    if (doc["full"].is<JsonArrayConst>()) {
-        st.nLog = 0;
-        for (JsonObjectConst l : doc["full"].as<JsonArrayConst>()) appendLog(st, l);
-    } else {
-        dropOldest(st, doc["drop"] | 0);
-        for (JsonObjectConst l : doc["add"].as<JsonArrayConst>()) appendLog(st, l);
-    }
+    st.nLog = 0;
+    for (JsonObjectConst l : doc["full"].as<JsonArrayConst>()) appendLog(st, l);
     st.logVer++;
 }
 

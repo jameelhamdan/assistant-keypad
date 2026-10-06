@@ -104,7 +104,3 @@ def test_info_file_removed_on_stop(home):
     stop.set()
     t.join(2)
     assert not (home / "agent.json").exists()
-
-
-def test_no_legacy_agent_means_nothing_to_stop(home):
-    assert ipc.stop_legacy() is False

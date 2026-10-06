@@ -1,4 +1,4 @@
-"""An in-process keypad for tests and `keypad agent --fake-device`.
+"""An in-process keypad for the tests.
 policy decides what it presses for each screen; None = never press."""
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .. import proto
-from .links import Link, LinkClosed
+from keypad import proto
+from keypad.device.links import Link, LinkClosed
 
 Policy = Callable[[dict[str, Any]], dict[str, Any]]  # screen -> press fields (key, act, idx?, sel?)
 
@@ -35,13 +35,6 @@ def press_label(label: str) -> Policy:
                 return {"key": 7, "act": "pick", "idx": i}
         return first_key(s)
     return policy
-
-
-# `keypad agent --fake-device <policy>`
-POLICIES: dict[str, Policy | None] = {
-    "first": first_key, "none": None, "allow": press_label("Yes"), "deny": press_label("No"),
-    "continue": press_label("continue"), "pc": press_label("pc"),
-}
 
 
 class Fake(Link):
@@ -90,10 +83,7 @@ class Fake(Link):
         elif t == "feed":
             with self._lock:
                 self.feeds.append(m)
-                if "full" in m:
-                    self.log = list(m["full"])
-                else:
-                    self.log = self.log[m.get("drop", 0):] + list(m.get("add", []))
+                self.log = list(m["full"])
         elif t == "screen":
             with self._lock:
                 self.screens.append(m)

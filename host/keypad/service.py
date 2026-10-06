@@ -12,15 +12,11 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from . import config, osutil
-from .paths import env_without_bundle, gui_path
+from .dirs import env_without_bundle, gui_path
+from .trayos import TRAY_MUTEX
 
 LABEL = "com.jameelhamdan.keypad"
-LEGACY_LABELS = ("com.jameelhamdan.keypad.agent", "com.jameelhamdan.keypad.tray")  # older versions ran two jobs
 TASK_NAME = "Keypad"
-LEGACY_TASK = "Keypad Agent"
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_NAME = "Keypad"
-TRAY_MUTEX = "Local\\KeypadTray"
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -93,10 +89,6 @@ def _task_xml(binary: str, user: str) -> str:
   <RegistrationInfo><Description>Keypad (hardware keypad for Claude Code): the tray and its agent</Description></RegistrationInfo>
   <Triggers>
     <LogonTrigger><Enabled>true</Enabled><UserId>{escape(user)}</UserId></LogonTrigger>
-    <TimeTrigger>
-      <Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
-      <StartBoundary>2026-01-01T00:00:00</StartBoundary><Enabled>true</Enabled>
-    </TimeTrigger>
   </Triggers>
   <Principals><Principal id="Author"><UserId>{escape(user)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
@@ -104,7 +96,8 @@ def _task_xml(binary: str, user: str) -> str:
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <!-- the one-minute repetition above relaunches Keypad whenever it is not running (IgnoreNew skips it while it is) -->
+    <!-- like launchd's KeepAlive on macOS: a crash or kill (non-zero exit) is restarted after a minute; Quit is not -->
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
     <Hidden>true</Hidden>
   </Settings>
   <Actions Context="Author"><Exec><Command>{escape(binary)}</Command><Arguments>tray --quiet</Arguments></Exec></Actions>
@@ -126,24 +119,10 @@ def _win_register(binary: str) -> None:
             raise RuntimeError(f"schtasks: {r.stdout}{r.stderr}".strip())
     finally:
         os.unlink(xml)
-    _win_drop_legacy()
-
-
-def _win_drop_legacy() -> None:
-    """Older versions ran an agent task plus a Run-key tray."""
-    import winreg
-
-    _run("schtasks", "/Delete", "/TN", LEGACY_TASK, "/F")
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
-            winreg.DeleteValue(k, RUN_NAME)
-    except OSError:
-        pass
 
 
 def _win_unregister() -> None:
     _run("schtasks", "/Delete", "/TN", TASK_NAME, "/F")
-    _win_drop_legacy()
 
 
 def tray_running() -> bool:
@@ -172,9 +151,6 @@ def install(binary: str) -> None:
     binary = gui_path(binary)
     if sys.platform == "darwin":
         config.log_dir().mkdir(parents=True, exist_ok=True)
-        for old in LEGACY_LABELS:  # older versions ran an agent and a tray as two jobs
-            _run("launchctl", "bootout", f"{_domain()}/{old}")
-            _plist_path(old).unlink(missing_ok=True)
         _run("launchctl", "enable", f"{_domain()}/{LABEL}")
         p = _plist_path(LABEL)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -194,10 +170,9 @@ def install(binary: str) -> None:
 def uninstall() -> None:
     """Removes the login item and stops the tray (stop the agent through its API first)."""
     if sys.platform == "darwin":
-        for label in (LABEL, *LEGACY_LABELS):
-            _run("launchctl", "bootout", f"{_domain()}/{label}")
-            _run("launchctl", "enable", f"{_domain()}/{label}")  # drop any override
-            _plist_path(label).unlink(missing_ok=True)
+        _run("launchctl", "bootout", f"{_domain()}/{LABEL}")
+        _run("launchctl", "enable", f"{_domain()}/{LABEL}")  # drop any override
+        _plist_path(LABEL).unlink(missing_ok=True)
     elif sys.platform == "win32":
         _win_unregister()
         _win_stop_trays()
@@ -225,7 +200,7 @@ def registered() -> bool:
     """Whether the login item was ever set up, even if turned off since
     (first-launch setup must not undo the user's choice)."""
     if sys.platform == "darwin":
-        return any(_plist_path(label).exists() for label in (LABEL, *LEGACY_LABELS))
+        return _plist_path(LABEL).exists()
     if sys.platform == "win32":
         return _run("schtasks", "/Query", "/TN", TASK_NAME).returncode == 0
     return False

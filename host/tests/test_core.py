@@ -3,12 +3,12 @@ import threading
 import time
 
 from conftest import SID, behavior
+from fakekeypad import first_key, press_label
 
 from keypad import config
 from keypad.core import sessions as S
 from keypad.core.markdown import BOLD as B
 from keypad.core.text import redact
-from keypad.device.fake import first_key, press_label
 
 SUGGEST = [{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "go test:*"}], "behavior": "allow",
             "destination": "localSettings"}]
@@ -292,14 +292,14 @@ def test_transcript_state_follows_tools_but_not_open_requests(env, tmp_path):
     e.hook("SessionStart", {"transcript_path": str(tp)})
     with open(tp, "a", encoding="utf-8") as f:
         f.write(asst({"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/w/main.go"}}))
-    wait_status(e, lambda st: one(st).get("state") == "tool" and one(st).get("detail") == "main.go")
+    wait_status(e, lambda st: one(st).get("state") == "working" and one(st).get("detail") == "main.go")
     with open(tp, "a", encoding="utf-8") as f:
         f.write(jl(type="user", message={"content": "[Request interrupted by user]"}))
     wait_status(e, lambda st: one(st).get("state") == "idle")
     e.a.sessions.touch(SID, S.PERMISSION, "Permission", "Bash: ls")  # a request is waiting on someone
     with open(tp, "a", encoding="utf-8") as f:
         f.write(asst({"type": "tool_use", "id": "t2", "name": "Glob", "input": {"pattern": "*.go"}}))
-    wait_status(e, lambda st: one(st).get("state") == "permission" and (st.get("log") or [{}])[-1].get("t") == "Glob(*.go)")
+    wait_status(e, lambda st: one(st).get("state") == "asking" and (st.get("log") or [{}])[-1].get("t") == "Glob(*.go)")
 
 
 def test_pc_answering_first_closes_the_keypad_dialog(env, tmp_path):
@@ -475,17 +475,7 @@ def test_edit_approval_shows_the_diff(env):
     assert s["diff"] is True and s["body"].split("\n") == ["/w/app.py", "  x = 1", "- y = 2", "+ y = 3"]
 
 
-def test_feed_added_describes_how_the_transcript_moved():
-    from keypad.core.agent import feed_added
-
-    a, b, c, d = ({"k": "c", "t": x} for x in "abcd")
-    assert feed_added([a, b], [a, b, c]) == (0, [c])
-    assert feed_added([a, b, c], [b, c, d]) == (1, [d])  # the oldest fell off the end of the log
-    assert feed_added([a, b], [c, d]) is None  # nothing in common: send it all
-    assert feed_added([], [a]) is None
-
-
-def test_keypad_gets_only_what_is_new(env):
+def test_keypad_gets_the_transcript_when_it_changes(env):
     e = env(first_key)
     e.hook("SessionStart", {})
     e.a.sessions.add_log(SID, {"k": "c", "t": "one"})
@@ -494,15 +484,8 @@ def test_keypad_gets_only_what_is_new(env):
     e.a.sessions.add_log(SID, {"k": "c", "t": "two"})
     e.a.mark_dirty()
     wait_status(e, lambda st: len(st.get("log") or []) == 2)
-    kinds = [("full" in m, m.get("add")) for m in e.fake.feeds]
-    assert kinds[0][0] and kinds[-1] == (False, [{"k": "c", "t": "two"}]), kinds
-
-
-def test_the_fake_keypad_flag_needs_the_development_switch(monkeypatch):
-    import pytest
-
-    from keypad import agent_cmd
-
-    monkeypatch.delenv("KEYPAD_DEV", raising=False)
-    with pytest.raises(SystemExit, match="KEYPAD_DEV=1"):
-        agent_cmd.start_agent("allow")
+    assert e.fake.feeds[-1]["full"] == [{"k": "c", "t": "one"}, {"k": "c", "t": "two"}]
+    n = len(e.fake.feeds)
+    e.a.mark_dirty()
+    time.sleep(0.4)
+    assert len(e.fake.feeds) == n, "an unchanged transcript is not sent again"

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import time
 
 from . import claudecfg, config, ipc, service
-from .paths import self_path
+from .dirs import self_path
 
 
 def call(method: str, path: str, body=None, timeout: float = 30):
@@ -18,7 +17,7 @@ def call(method: str, path: str, body=None, timeout: float = 30):
 
 
 def stop_agent() -> None:
-    """Asks a running agent (possibly an older version) to exit."""
+    """Asks a running agent to exit."""
     if not ipc.alive():
         return
     try:
@@ -34,7 +33,7 @@ def stop_agent() -> None:
 def cmd_install(args: list[str]) -> None:
     stop_agent()
     cfg, _ = config.load()
-    claudecfg.install(self_path(), cfg.behavior.max_continues)
+    claudecfg.install(self_path(), cfg.behavior)
     print("Claude Code integration installed:", claudecfg.settings_path())
     service.install(self_path())
     print("Keypad starts at login and is running now.")
@@ -72,27 +71,12 @@ def cmd_status(args: list[str]) -> None:
         print("\nThis computer and the keypad disagree about pairing (it was paired from another computer, or "
               "this one lost its key). Tray -> your keypad -> Set up Wi-Fi… (over USB) fixes it.")
     print()
-    _table([("SESSION", "PROJECT", "STATE", "DETAIL")] +
-           [(x["id"][:8], x["project"], x["state"], f"{x['title']} {x['detail']}") for x in s["sessions"]])
+    _table([("SESSION", "PROJECT", "STATE", "FEED", "DETAIL")] +
+           [(x["id"][:8], x["project"], x["state"], "ok" if x["feed_ok"] else "unreadable", f"{x['title']} {x['detail']}")
+            for x in s["sessions"]])
 
 
 def _table(rows: list[tuple[str, ...]]) -> None:
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
     for r in rows:  # the last column isn't padded
         print("  ".join(c.ljust(w) for c, w in zip(r, widths, strict=False)) + "  " + r[-1])
-
-
-def cmd_update(args: list[str]) -> None:
-    if len(args) != 2:
-        raise RuntimeError("usage: keypad update <keypad-id> <firmware.bin>")
-    dev, path = args[0], os.path.abspath(args[1])
-    call("POST", f"/devices/{dev}/update", {"path": path})
-    while True:
-        time.sleep(0.7)
-        p = call("GET", f"/devices/{dev}/update")["progress"]
-        if p < 0:
-            raise RuntimeError("update failed (see the agent log)")
-        print(f"\rupdating {dev}: {p:3d}%", end="", flush=True)
-        if p >= 100:
-            print("\ndone, the keypad restarts")
-            return

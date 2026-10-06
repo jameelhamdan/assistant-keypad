@@ -32,16 +32,6 @@ class Link:
 # ---- USB ------------------------------------------------------------------------
 
 
-def usb_ports() -> list[str]:
-    """Serial ports that belong to an Espressif native-USB device."""
-    from serial.tools import list_ports
-
-    try:
-        return [p.device for p in list_ports.comports() if p.vid == proto.USB_VENDOR_ID]
-    except Exception:  # polled every 2s by Hub.run(): one bad scan must not kill that thread forever
-        return []
-
-
 def keypad_id(serial_number: str | None) -> str:
     """The keypad id (kp- and the last 3 bytes of its MAC) from the USB serial number, which
     is the MAC address ("68:B6:B3:22:F9:0C" -> "kp-22f90c"); "" if it is not one."""

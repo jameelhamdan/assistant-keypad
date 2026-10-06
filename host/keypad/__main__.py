@@ -6,7 +6,6 @@
   keypad install       connect Claude Code and start at login
   keypad uninstall [--purge]   remove both (--purge also deletes settings and pairing keys)
   keypad status        show keypads and sessions
-  keypad update <keypad-id> <firmware.bin>
   keypad version
 
 Imports are lazy: `keypad hook` runs on every Claude Code tool call and must
@@ -24,7 +23,6 @@ USAGE = """usage: keypad <command>
   install             connect Claude Code and start Keypad at login
   uninstall           undo install
   status              show keypads and Claude Code sessions
-  update <id> <file>  update a keypad's firmware
   hook <Event>        (used by Claude Code)
   version
 """
@@ -37,7 +35,6 @@ def default_command() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    args = [a for a in args if not a.startswith("-psn_")]  # older macOS adds this when the app is double-clicked
     args = args or [default_command()]
     cmd, rest = args[0], args[1:]
     if cmd == "hook":
@@ -64,8 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from . import cli
 
-            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "status": cli.cmd_status,
-                  "update": cli.cmd_update}.get(cmd)
+            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "status": cli.cmd_status}.get(cmd)
             if fn is None:
                 print(USAGE, end="", file=sys.stderr)
                 return 2

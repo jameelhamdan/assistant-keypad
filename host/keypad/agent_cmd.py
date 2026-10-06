@@ -3,7 +3,6 @@ process (start_agent), or alone with `keypad agent`."""
 
 from __future__ import annotations
 
-import argparse
 import logging
 import logging.handlers
 import os
@@ -16,7 +15,7 @@ import time
 from . import config, ipc, osutil
 from .core.agent import Agent
 from .device.hub import Hub
-from .paths import self_path
+from .dirs import self_path
 from .server import Server
 from .version import version
 
@@ -62,21 +61,11 @@ def watch(stop: threading.Event, a: Agent) -> None:
 _started: threading.Event | None = None  # the stop event of the agent running in this process
 
 
-def start_agent(fake_device: str = "") -> tuple[threading.Event, logging.Logger] | None:
+def start_agent() -> tuple[threading.Event, logging.Logger] | None:
     """Starts the agent's threads in this process (the tray hosts the agent, or
     `keypad agent` does). Returns the stop event and logger, or None when
     another agent already serves this user."""
     global _started
-    # Development only: the simulated keypad answers requests by itself, so it is not part of the
-    # shipped app (packaging/keypad.spec leaves it out) and needs KEYPAD_DEV=1 from source.
-    fakemod = None
-    if fake_device:
-        if os.environ.get("KEYPAD_DEV") != "1":
-            raise SystemExit("--fake-device is for development: set KEYPAD_DEV=1 (it is not in the packaged app)")
-        try:
-            from .device import fake as fakemod
-        except ImportError:
-            raise SystemExit("--fake-device is for development and is not in the packaged app") from None
     if _started is not None and not _started.is_set():
         return None  # this process already runs one
     cfg, cfg_err = config.load()
@@ -86,9 +75,6 @@ def start_agent(fake_device: str = "") -> tuple[threading.Event, logging.Logger]
     if ipc.alive():
         log.info("another agent is already running")
         return None
-    if ipc.stop_legacy():  # an older version's agent still holds the keypad
-        log.warning("stopped an agent of an older Keypad version")
-        time.sleep(1.5)
     store, err = config.Store.open()
     if err:
         log.warning("state problem: %s", err)
@@ -118,12 +104,6 @@ def start_agent(fake_device: str = "") -> tuple[threading.Event, logging.Logger]
     for target, targs in ((serve, ()), (agent.run, (stop,)), (hub.run, (stop,)), (watch, (stop, agent))):
         threading.Thread(target=target, args=targs, daemon=True).start()
 
-    if fakemod is not None:
-        policy = fakemod.POLICIES.get(fake_device, fakemod.first_key)
-        f = fakemod.Fake("kp-fake01", policy, delay=0.3)
-        threading.Thread(target=hub.serve, args=(f,), daemon=True).start()
-        log.warning("SIMULATED KEYPAD attached - requests are answered automatically (policy %s)", fake_device)
-
     log.info("agent started version=%s host_id=%s config=%s pid=%d", version(), store.host_id(),
              config.config_path(), os.getpid())
     return stop, log
@@ -131,11 +111,7 @@ def start_agent(fake_device: str = "") -> tuple[threading.Event, logging.Logger]
 
 def run_agent(args: list[str]) -> int:
     """`keypad agent`: the agent alone, without a tray (headless)."""
-    ap = argparse.ArgumentParser(prog="keypad agent")
-    ap.add_argument("--fake-device", default="",
-                    help="attach a simulated keypad that answers: first|allow|deny|continue|pc|none (testing only)")
-    opts = ap.parse_args(args)
-    started = start_agent(opts.fake_device)
+    started = start_agent()
     if started is None:
         return 0  # not a failure: exiting 0 keeps launchd / Task Scheduler from restarting a duplicate
     stop, log = started

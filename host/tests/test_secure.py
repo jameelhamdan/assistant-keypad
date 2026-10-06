@@ -68,6 +68,6 @@ def test_known_vector():
     nd = bytes(range(0xB0, 0xC0))
     h2d, d2h = secure.derive_keys(psk, nh, nd)
     ct = secure.Sealer(h2d).seal(b'{"t":"ping"}')
-    assert h2d.hex() == "e25da196c947aae7c4d9a63fa310a0d1b128ab8590e4137ad616b02ac49aec9e"
-    assert d2h.hex() == "5dcab987978d57b78a92922eb6e095892bf3bc4056d9d94828ac507e5b7a3492"
-    assert ct.hex() == "afab167107d196ed524c879b0e8812465b0b6bde0e2df6c0be57ca88"
+    assert h2d.hex() == "4e45580c0a8caf97b0b55a10355c1da2a5ef693d196e2f8e8b85c2dc459bc1c2"
+    assert d2h.hex() == "70ff6e53ceaa8b83334365430a74e8bcc32320ba6a64e55cb53700e9a1e61420"
+    assert ct.hex() == "bca3f535a7905941f515bb6e77b78ff5795f493d28067dc1dde1018b"

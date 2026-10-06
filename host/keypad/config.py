@@ -14,14 +14,9 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from .dirs import data_dir as _data_dir
+from .dirs import data_dir
 
 MAX_SHORTCUTS = 16  # what the tray lists and the keypad pages through
-
-
-def data_dir() -> Path:
-    """The per-user data directory (config, state, logs, agent.json)."""
-    return Path(_data_dir())
 
 
 def log_dir() -> Path:
@@ -50,13 +45,7 @@ class Behavior:
     ask_when_finished: int = 60  # s away from the PC before Claude finishing is asked on the keypad (0 = always, -1 = never)
     max_continues: int = 20
     intercept_ask_user_question: bool = True
-    shortcut_ttl: int = 900
     timeout: int = 300  # s the keypad waits for an answer before the PC takes over
-
-
-# Earlier versions wrote these eight shortcuts into every new config file.
-# A list that is exactly them was never edited, so it is dropped on load.
-OLD_DEFAULT_LABELS = ["Run tests", "Write tests", "Fix bugs", "Refactor", "Review", "Improve design", "Explain", "Commit"]
 
 
 @dataclass
@@ -77,7 +66,6 @@ class Config:
             return max(lo, min(hi, v))
 
         b.max_continues = clamp(b.max_continues, 1, 200)
-        b.shortcut_ttl = clamp(b.shortcut_ttl, 30, 86400)
         b.timeout = clamp(b.timeout, 10, 3600)
         b.ask_when_finished = clamp(b.ask_when_finished, -1, 3600)
         self.shortcuts = [s for s in self.shortcuts if s.label.strip() and s.prompt.strip()][:MAX_SHORTCUTS]
@@ -131,12 +119,6 @@ def load() -> tuple[Config, Exception | None]:
     p = config_path()
     if not p.exists():
         c = Config()
-        legacy = p.with_suffix(".yaml")
-        if legacy.exists():  # Keypad 2.x kept its settings in YAML: carry them over once
-            try:
-                c = Config.from_dict(_migrate_legacy(_read_legacy_yaml(legacy.read_text(encoding="utf-8"))))
-            except (OSError, ValueError):
-                c = Config()
         try:
             save(c)
         except OSError as e:
@@ -146,82 +128,8 @@ def load() -> tuple[Config, Exception | None]:
         c = Config.from_dict(json.loads(p.read_text(encoding="utf-8")) or {})
     except (OSError, ValueError) as e:
         return Config(), e
-    if [s.label for s in c.shortcuts] == OLD_DEFAULT_LABELS:
-        c.shortcuts = []
     c.validate()
     return c, None
-
-
-def _scalar(s: str) -> Any:
-    s = s.strip()
-    if s in ("true", "false"):
-        return s == "true"
-    if s in ("null", "~", ""):
-        return None
-    if s == "[]":
-        return []
-    if s == "{}":
-        return {}
-    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
-        return s[1:-1].replace("''", "'") if s[0] == "'" else s[1:-1].encode().decode("unicode_escape")
-    try:
-        return int(s)
-    except ValueError:
-        return s
-
-
-def _read_legacy_yaml(text: str) -> dict[str, Any]:
-    """The small YAML subset Keypad 2.x wrote (nested mappings, scalars, a list of mappings),
-    read without a YAML library."""
-    root: dict[str, Any] = {}
-    stack: list[tuple[int, Any, str]] = [(-1, root, "")]  # indent, container, the key it was filed under
-    for raw in text.splitlines():
-        if raw.lstrip().startswith("#") or not raw.strip():
-            continue
-        line = raw.rstrip()
-        indent = len(line) - len(line.lstrip())
-        body = line.strip()
-        while len(stack) > 1 and indent <= stack[-1][0] and not (body.startswith("- ") and indent == stack[-1][0] and (isinstance(stack[-1][1], list) or not stack[-1][1])):
-            stack.pop()
-        _, parent, _ = stack[-1]
-        if body.startswith("- "):
-            if isinstance(parent, dict) and not parent and len(stack) > 1:  # "key:" was a list, not a mapping
-                grand, key = stack[-2][1], stack[-1][2]
-                parent = grand[key] = []
-                stack[-1] = (stack[-1][0], parent, key)
-            if not isinstance(parent, list):
-                continue
-            item_body = body[2:]
-            k, sep, v = item_body.partition(":")
-            if sep and not item_body.startswith(("'", '"')):
-                item: dict[str, Any] = {k.strip(): _scalar(v)}
-                parent.append(item)
-                stack.append((indent + 1, item, ""))
-            else:
-                parent.append(_scalar(item_body))
-            continue
-        k, sep, v = body.partition(":")
-        if not sep or not isinstance(parent, dict):
-            continue
-        if v.strip() == "":
-            child: dict[str, Any] = {}
-            parent[k.strip()] = child
-            stack.append((indent, child, k.strip()))
-        else:
-            parent[k.strip()] = _scalar(v)
-    return root
-
-
-def _migrate_legacy(old: dict[str, Any]) -> dict[str, Any]:
-    """Keypad 2.x settings as 3.x names."""
-    b = dict(old.get("behavior") or {})
-    if b.pop("ask_on_stop", True) is False:
-        b["ask_when_finished"] = -1
-    elif "stop_when_away" in b:
-        b["ask_when_finished"] = b["stop_when_away"]
-    b.pop("stop_when_away", None)
-    b.pop("pc_handback", None)
-    return {**old, "behavior": b}
 
 
 def save(c: Config) -> None:

@@ -2,6 +2,7 @@
 #   make setup       create the Python environment (host/.venv, needs uv)
 #   make test        host + firmware unit tests
 #   make firmware    build the keypad firmware (PlatformIO)
+#   make sim         firmware simulator tests (needs ziglang, pillow)
 #   make flash       flash it over USB (quit Keypad first if it holds the port)
 #   make mac         Keypad.app + DMG (macOS)
 #   Windows:         packaging\windows\build.ps1 -Version x.y.z
@@ -11,7 +12,7 @@ FW_VERSION ?= $(patsubst v%,%,$(VERSION))
 FW_BIN := firmware/.pio/build/keypad/firmware.bin
 DATA := host/keypad/data
 
-.PHONY: setup test test-host test-firmware lint firmware flash bundle-firmware mac clean
+.PHONY: setup test test-host test-firmware lint firmware flash sim bundle-firmware mac clean
 
 setup:
 	cd host && uv sync
@@ -32,6 +33,11 @@ firmware:
 
 flash:
 	cd firmware && PLATFORMIO_BUILD_FLAGS='-DKEYPAD_FW_VERSION=\"$(FW_VERSION)\"' pio run -e keypad -t upload
+
+sim: setup firmware
+	uv pip install -q --python host/.venv ziglang
+	host/.venv/bin/python firmware/sim/build.py
+	host/.venv/bin/python -m pytest firmware/sim -q
 
 # Bundle the firmware image (enables "Update firmware" in the tray).
 bundle-firmware: firmware

@@ -17,7 +17,7 @@ with Sim() as kp:
     tiles.append(("no sessions", kp.image()))
     for mode in sc.MODES:
         kp.msg(sc.status(mode=mode)); tiles.append((f"mode {mode}", kp.image()))
-    kp.msg(sc.status(state="permission", queue=2)); tiles.append(("asking, 2 queued", kp.image()))
+    kp.msg(sc.status(state="asking", queue=2)); tiles.append(("asking, 2 queued", kp.image()))
     kp.msg(sc.status(paused=True)); tiles.append(("paused", kp.image()))
     kp.msg(sc.status())
     for name, scr in sc.SCREENS.items():

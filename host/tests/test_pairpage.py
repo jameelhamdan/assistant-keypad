@@ -15,6 +15,10 @@ class FakeAgent:
 class FakeHub:
     def __init__(self):
         self.calls = []
+        self.opened = 0
+
+    def open_pairing(self):
+        self.opened += 1
 
     def provision(self, dev_id, ssid, password, name):
         if ssid == "bad":
@@ -26,7 +30,7 @@ class FakeHub:
 def page():
     hub = FakeHub()
     p = PairPage(FakeAgent(), hub)
-    p.hub_calls = hub.calls
+    p.hub_calls, p.fake_hub = hub.calls, hub
     yield p
     p.close()
 
@@ -43,6 +47,7 @@ def test_the_page_lists_the_usb_keypad_and_pairs_it(page):
     assert status == 200 and b"Set up a keypad" in body and page.token.encode() in body
     _, state = fetch(url.replace("/?", "/state?"))
     assert json.loads(state)["keypads"][0]["link"] == "usb"
+    assert page.fake_hub.opened == 1, "an open page keeps USB scanned"
     _, res = fetch(url.replace("/?", "/pair?"), {"id": "kp-1", "name": "Desk", "ssid": "Home", "pass": "secret"},
                    {"Content-Type": "application/json"})
     assert json.loads(res) == {"ok": True} and page.hub_calls == [("kp-1", "Home", "secret", "Desk")]

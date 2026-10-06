@@ -13,19 +13,19 @@ from .markdown import device_text, render
 from .text import clip, project_of
 
 IDLE, THINKING, WORKING, TOOL = "idle", "thinking", "working", "tool"
-PERMISSION, QUESTION, INPUT = "permission", "question", "input"
-DONE, STOPPED, CONTINUING, FAILED, ENDED = "done", "stopped", "continuing", "failed", "ended"
+PERMISSION, QUESTION = "permission", "question"
+DONE, STOPPED, CONTINUING, ENDED = "done", "stopped", "continuing", "ended"
 
-# These states are also spelled out in host/keypad/tray.py (state_word) and
-# firmware/src/ui.cpp (busy, waiting, stateWord); tests/test_states.py fails
-# when the three drift apart.
-BUSY_STATES = {THINKING, WORKING, TOOL, PERMISSION, QUESTION, INPUT, CONTINUING}
-WAITING_STATES = {PERMISSION, QUESTION, STOPPED, INPUT}
-WORKING_STATES = {THINKING, WORKING, TOOL, CONTINUING}
+BUSY_STATES = {THINKING, WORKING, TOOL, PERMISSION, QUESTION, CONTINUING}
+# What the keypad and the tray are told: the one place the states are grouped.
+# working / continuing: Claude is busy; asking: a request waits for you; stopped: Claude
+# finished and waits for you; idle: nothing going on. (ui.cpp compares against these words.)
+PHASES = {THINKING: "working", WORKING: "working", TOOL: "working", CONTINUING: "continuing",
+          PERMISSION: "asking", QUESTION: "asking", STOPPED: "stopped"}
 STALE_AFTER = 6 * 3600
 
 # transcript line kinds
-LOG_USER, LOG_CLAUDE, LOG_TOOL, LOG_RESULT = "u", "c", "t", "r"
+LOG_USER, LOG_CLAUDE, LOG_RESULT = "u", "c", "r"
 LOG_MAX = 32  # the keypad scrolls back through these (firmware MAX_LOG)
 MAX_SESSIONS = 8  # what a keypad lists
 
@@ -48,7 +48,11 @@ class Session:
     log: list[dict[str, str]] = field(default_factory=list)  # latest transcript lines, oldest first
 
     def view(self) -> dict[str, Any]:
-        return {k: copy.copy(v) for k, v in self.__dict__.items()}
+        return {**{k: copy.copy(v) for k, v in self.__dict__.items()}, "phase": phase(self.state)}
+
+
+def phase(state: str) -> str:
+    return PHASES.get(state, "idle")
 
 
 def fit_log(kind: str, text: str) -> str:
@@ -215,7 +219,7 @@ def wire(sessions: list[Session]) -> list[dict[str, Any]]:
     out = []
     now = time.time()
     for x in sessions:
-        d = {"id": short(x.id), "project": proto.fit(x.project, proto.SESSION_PROJECT), "state": x.state,
+        d = {"id": short(x.id), "project": proto.fit(x.project, proto.SESSION_PROJECT), "state": phase(x.state),
              "title": proto.fit(clip(x.title, 40), proto.SESSION_TITLE), "since": int(now - (x.turn or x.started))}
         if x.detail:
             d["detail"] = proto.fit(clip(x.detail, 120), proto.SESSION_DETAIL)

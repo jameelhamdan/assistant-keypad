@@ -24,7 +24,7 @@ bool deriveKeys(const uint8_t psk[32], const uint8_t nh[16], const uint8_t nd[16
     uint8_t salt[32], prk[32], t1[32], t2[32];
     memcpy(salt, nh, 16);
     memcpy(salt + 16, nd, 16);
-    static const char INFO[] = "keypad v2";
+    static const char INFO[] = "keypad v3";
     const size_t infoLen = sizeof(INFO) - 1;
     uint8_t buf[32 + sizeof(INFO)];
     // extract
@@ -97,11 +97,9 @@ bool cryptoSelfTest() {
     uint8_t psk[32], nh[16], nd[16], h2d[32], d2h[32];
     for (int i = 0; i < 32; i++) psk[i] = i;
     for (int i = 0; i < 16; i++) { nh[i] = 0xA0 + i; nd[i] = 0xB0 + i; }
-    static const uint8_t WANT_H2D[4] = {0xe2, 0x5d, 0xa1, 0x96};
-    static const uint8_t WANT_D2H[4] = {0x5d, 0xca, 0xb9, 0x87};
-    static const uint8_t WANT_CT[28] = {0xaf, 0xab, 0x16, 0x71, 0x07, 0xd1, 0x96, 0xed, 0x52, 0x4c,
-                                        0x87, 0x9b, 0x0e, 0x88, 0x12, 0x46, 0x5b, 0x0b, 0x6b, 0xde,
-                                        0x0e, 0x2d, 0xf6, 0xc0, 0xbe, 0x57, 0xca, 0x88};
+    static const uint8_t WANT_H2D[4] = {0x4e, 0x45, 0x58, 0x0c};
+    static const uint8_t WANT_D2H[4] = {0x70, 0xff, 0x6e, 0x53};
+    static const uint8_t WANT_CT[28] = {0xbc, 0xa3, 0xf5, 0x35, 0xa7, 0x90, 0x59, 0x41, 0xf5, 0x15, 0xbb, 0x6e, 0x77, 0xb7, 0x8f, 0xf5, 0x79, 0x5f, 0x49, 0x3d, 0x28, 0x06, 0x7d, 0xc1, 0xdd, 0xe1, 0x01, 0x8b};
     if (!deriveKeys(psk, nh, nd, h2d, d2h)) return false;
     if (memcmp(h2d, WANT_H2D, 4) != 0 || memcmp(d2h, WANT_D2H, 4) != 0) return false;
     Sealer s;

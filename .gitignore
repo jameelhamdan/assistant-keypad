@@ -14,5 +14,6 @@ __pycache__/
 .DS_Store
 *.log
 
-# local secrets (Wi-Fi credentials for auto-pairing in development)
+
+# local secrets
 .env

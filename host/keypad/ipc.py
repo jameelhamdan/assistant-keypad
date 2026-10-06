@@ -112,35 +112,6 @@ def request(method: str, path: str, body: Any = None, timeout: float | None = 30
     return resp.get("b")
 
 
-def stop_legacy() -> bool:
-    """Asks an agent of an older version (Keypad 2.x listened on a Windows named pipe or a
-    Unix socket instead of agent.json) to quit, so two generations never fight over the
-    keypad. True if one answered."""
-    try:
-        msg = _pack({"m": "POST", "p": "/quit", "b": None})
-        if os.name == "nt":
-            user = os.environ.get("USERNAME", "user").replace("\\", "-").replace(" ", "-")
-            if home := os.environ.get("KEYPAD_HOME"):
-                import hashlib
-
-                user += "-" + hashlib.sha1(home.encode()).hexdigest()[:8]
-            with open(rf"\\.\pipe\keypad-agent-{user}", "r+b", buffering=0) as f:
-                f.write(msg)
-                f.read(4)
-            return True
-        sock = os.path.join(data_dir(), "agent.sock")
-        if not os.path.exists(sock):
-            return False
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(2)
-        s.connect(sock)
-        s.sendall(msg)
-        s.close()
-        return True
-    except OSError:
-        return False
-
-
 def alive() -> bool:
     try:
         _connect(0.5)[0].close()

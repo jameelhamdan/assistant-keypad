@@ -1,6 +1,6 @@
 [project]
 name = "keypad"
-version = "2.2.0"
+version = "0.0.0"  # placeholder: releases take their version from the git tag (see packaging/ and CI)
 description = "Hardware keypad for Claude Code: the PC side (agent, tray, hooks)"
 requires-python = ">=3.12"
 dependencies = [

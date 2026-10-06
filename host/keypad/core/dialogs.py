@@ -16,22 +16,12 @@ TICK = 0.25
 
 
 class DialogError(Exception):
-    """Any of these means: let Claude Code use its own UI."""
+    """The keypad did not decide (nobody there, no answer in time, the PC answered, it
+    was unplugged): let Claude Code use its own UI. The message says why."""
 
 
-class NoKeypad(DialogError):
-    def __init__(self) -> None:
-        super().__init__("no keypad connected")
-
-
-class Timeout(DialogError):
-    def __init__(self) -> None:
-        super().__init__("no answer on the keypad")
-
-
-class ToPC(DialogError):
-    def __init__(self, why: str = "handed back to the PC") -> None:
-        super().__init__(why)
+def no_keypad() -> DialogError:
+    return DialogError("no keypad connected")
 
 
 def press_matches(screen: dict[str, Any], press: dict[str, Any]) -> bool:
@@ -79,7 +69,7 @@ class Dialog:
         m = self.m
         targets = m.disp.targets()
         if not targets:
-            raise NoKeypad()
+            raise no_keypad()
         with self._lock:
             self.n += 1
             s = proto.fit_screen(dict(screen, t="screen", id=f"{self.id}-{self.n}"))
@@ -98,20 +88,22 @@ class Dialog:
             except queue.Empty:
                 pass
             else:
+                if press.get("id") != s["id"]:
+                    continue  # a late press for an earlier screen of this dialog
                 if press.get("act") in ("pc", "done"):  # "done" on the finished screen: stop there
                     self.close_screen("pc", dev)
-                    raise ToPC()
+                    raise DialogError("handed back to the PC")
                 self.close_screen("answered", dev)
                 return press
             if self.cancelled:
                 self.close_screen("pc", "")
-                raise ToPC(self.cancelled)
+                raise DialogError(self.cancelled)
             if ctx.done():
                 self.close_screen("timeout", "")
-                raise Timeout()
+                raise DialogError("no answer on the keypad")
             if not m.disp.targets():
                 self.close_screen("disconnected", "")
-                raise NoKeypad()
+                raise no_keypad()
 
     def close_screen(self, why: str, except_dev: str) -> None:
         """Tells keypads (except the one that answered, which already locked
@@ -164,7 +156,7 @@ class Dialogs:
         """Waits for the keypads, then runs fn(dialog) and returns its result.
         DialogError means "let Claude Code use its own UI"."""
         if not self.disp.targets():
-            raise NoKeypad()
+            raise no_keypad()
         with self._lock:
             self._seq += 1
             d = Dialog(self, f"{kind[0]}{self._seq}", project, sid)
@@ -177,7 +169,7 @@ class Dialogs:
                     if d in self._queue:
                         self._queue.remove(d)
                 self._finish(d)  # no-op unless it won the race and became active
-                raise Timeout()
+                raise DialogError("no answer on the keypad")
         try:
             return fn(d)
         finally:
@@ -208,16 +200,16 @@ class Dialogs:
             d = self._active
         if d is None:
             return False
-        with d._lock:
+        with d._lock:  # queued under the lock: show() cannot swap the screen in between
             ok = d.screen is not None and d.screen["id"] == msg.get("id") and dev in d.targets
             if ok and not press_matches(d.screen, msg):
                 self.log.warning("ignored a press the screen did not offer: %s from %s", msg, dev)
                 return False
-        if ok:
-            try:
-                d.press.put_nowait((msg, dev))
-            except queue.Full:
-                pass
+            if ok:
+                try:
+                    d.press.put_nowait((msg, dev))
+                except queue.Full:
+                    pass
         return ok
 
     def reshow(self, dev: str) -> bool:
