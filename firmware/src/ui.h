@@ -1,4 +1,4 @@
-// Screen rendering (320x170 landscape, dark and light themes).
+// Screen rendering (320x170 landscape, dark theme).
 #pragma once
 
 #include <stdint.h>

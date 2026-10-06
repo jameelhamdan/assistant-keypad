@@ -1,10 +1,12 @@
 // Keypad simulator: the real app.cpp, ui.cpp and text/ run on the PC against stand-ins for the hardware.
 // It reads commands on stdin and answers on stdout, so a script, a test or a web page can drive it:
 //   msg <json>        a message from the host (screen, status, settings, ...)
-//   key <n> [ms]      press and release key n (0 = encoder click, 9 = mic) after holding it for ms
+//   key <n> [ms]      press and release key n (0 = encoder click) after holding it for ms
 //   down <n> / up <n> press / release key n
 //   turn <steps>      turn the encoder (+ clockwise)
 //   wait <ms>         let simulated time pass
+//   backlight          prints "BACKLIGHT <percent>", the brightness the keypad would set
+//   power usb|battery  the power source (a wire never dims the screen)
 //   host on|off       the simulated host pings every 2 s (default on); off shows the keypad's "waiting" state
 //   shot <file.ppm>   write the current frame (320x170, binary PPM)
 // Everything the keypad would send to the host is printed as "TX <json>".
@@ -17,6 +19,7 @@
 #include "config.h"
 #include "input.h"
 #include "link.h"
+#include "power.h"
 #include "model.h"
 #include "ui.h"
 
@@ -31,10 +34,10 @@ void linkBegin(MessageHandler h, const char *) { handler = h; }
 void linkPoll() {}
 bool linkSend(Src, const char *json, size_t len) { printf("TX %.*s\n", (int)len, json); fflush(stdout); return true; }
 void linkConfigure(const Stored &) {}
-bool linkNetAuthed() { return false; }
+bool linkNetAuthed() { return true; }
 WifiStatus linkWifi() { return {WifiState::Up, "192.168.1.40", -52}; }
 
-void storeLoad(Stored &s) { memset(&s, 0, sizeof s); s.dark = true; s.brightness = 80; strcpy(s.name, "Sim keypad"); }
+void storeLoad(Stored &s) { memset(&s, 0, sizeof s); s.brightness = 80; strcpy(s.name, "Sim keypad"); }
 void storeSave(const Stored &) {}
 
 bool otaBegin(size_t, const char *, const char **) { return false; }
@@ -43,6 +46,10 @@ bool otaFinish(const char **) { return false; }
 bool otaRunning() { return false; }
 int otaPercent() { return 0; }
 void otaAbort() {}
+
+static bool simUsb = false;   // "power usb|battery": which power source the simulated keypad runs from
+int8_t batteryPercent() { return simUsb ? -1 : 80; }
+bool usbPowered() { return simUsb; }
 
 bool hexDecode(const char *, uint8_t *, size_t) { return false; }
 bool cryptoSelfTest() { return true; }
@@ -64,7 +71,7 @@ bool inputHeld(uint8_t key, uint32_t ms) { return key < 16 && down_[key] && sim_
 
 static void push(uint8_t key, KeyAction a) {
     bool others = false;
-    for (int i = 0; i < 16; i++) if (i != key && down_[i] && i != KEY_MIC) others = true;
+    for (int i = 0; i < 16; i++) if (i != key && down_[i]) others = true;
     if (a == KeyAction::Press) { down_[key] = true; pressedAt[key] = sim_now; } else down_[key] = false;
     if (qn < 64) q[qn++] = {key, a, sim_now, pressedAt[key], !others};
 }
@@ -80,7 +87,7 @@ static void step(uint32_t ms) {
             static char ping[] = "{\"t\":\"ping\"}";
             char buf[32];
             strcpy(buf, ping);
-            handler(buf, strlen(buf), Src::Usb);
+            handler(buf, strlen(buf), Src::Net);
             lastPing = sim_now;
         }
         bool changed = appLoop();
@@ -101,7 +108,7 @@ int main() {
         if (!strncmp(line, "msg ", 4)) {
             static char buf[20000];
             strcpy(buf, line + 4);
-            handler(buf, strlen(buf), Src::Usb);
+            handler(buf, strlen(buf), Src::Net);
             step(300);
         } else if (!strncmp(line, "key ", 4)) {
             int k = 0, hold = 120;
@@ -124,6 +131,9 @@ int main() {
                 fclose(f);
             }
             printf("SHOT %s\n", line + 5); fflush(stdout);
+        } else if (!strcmp(line, "backlight")) {   // what main.cpp would set the backlight to
+            printf("BACKLIGHT %d\n", model.dimmed && model.brightness > DIM_PCT ? DIM_PCT : model.brightness); fflush(stdout);
+        } else if (!strncmp(line, "power ", 6)) { simUsb = !strcmp(line + 6, "usb");
         } else if (!strncmp(line, "host ", 5)) { hostOn = !strcmp(line + 5, "on"); lastPing = sim_now;
         } else if (!strcmp(line, "quit")) break;
     }

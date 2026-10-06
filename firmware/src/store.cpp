@@ -9,7 +9,6 @@ Preferences prefs;
 
 void storeLoad(Stored &s) {
     memset(&s, 0, sizeof(s));
-    s.dark = true;
     s.brightness = 80;
     prefs.begin("keypad", true);
     prefs.getString("ssid", s.ssid, sizeof(s.ssid));
@@ -17,7 +16,6 @@ void storeLoad(Stored &s) {
     prefs.getString("host", s.host, sizeof(s.host));
     s.paired = prefs.getBytes("key", s.key, sizeof(s.key)) == sizeof(s.key) && s.host[0];
     prefs.getString("name", s.name, sizeof(s.name));
-    s.dark = prefs.getBool("dark", true);
     s.brightness = prefs.getUChar("bright", 80);
     prefs.end();
 }
@@ -30,7 +28,6 @@ void storeSave(const Stored &s) {
     if (s.paired) prefs.putBytes("key", s.key, sizeof(s.key));
     else if (prefs.isKey("key")) prefs.remove("key");
     prefs.putString("name", s.name);
-    prefs.putBool("dark", s.dark);
     prefs.putUChar("bright", s.brightness);
     prefs.end();
 }

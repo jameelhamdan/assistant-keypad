@@ -3,30 +3,55 @@ the device-event sink and the Display for dialogs."""
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import config, proto
 from .ctx import Ctx
 from .dialogs import Dialog, DialogError, Dialogs
 from .hooks import HookMixin
-from .sessions import Sessions, short, wire
-from .text import clip, first_line
+from .sessions import (
+    BUSY_STATES,
+    CONTINUING,
+    DONE,
+    IDLE,
+    THINKING,
+    TOOL,
+    WORKING,
+    Sessions,
+    short,
+    wire,
+)
+from .text import clip, first_line, tool_verb
+from .transcript import CLAUDE, INTERRUPT, RESULT, USER, Tail
+from .transcript import TOOL as T_TOOL
 
 if TYPE_CHECKING:
     from ..device.hub import Conn, Hub
 
 
-SAVE_EVERY = 3.0  # s between writes of sessions.json
+POLL_EVERY = 0.3  # s between looks at the sessions' transcripts
+DISCOVER_WITHIN = 900  # s: transcripts touched this recently belong to sessions already running when the agent starts
+# states in which new transcript lines may change the shown state (not while a request waits on someone)
+FOLLOWABLE = {IDLE, DONE, THINKING, WORKING, TOOL, CONTINUING}
+
+
+def feed_added(prev: list[dict[str, str]], cur: list[dict[str, str]]) -> tuple[int, list[dict[str, str]]] | None:
+    """How cur follows prev: (the number of oldest entries prev lost, the entries
+    added), or None when cur is not prev moved along (send all of it)."""
+    for drop in range(len(prev)):
+        keep = prev[drop:]
+        if cur[: len(keep)] == keep:
+            return drop, cur[len(keep):]
+    return None
 
 
 class Agent(HookMixin):
-    def __init__(self, cfg: config.Config, store: config.Store, idle: Callable[[], tuple[float, bool]] | None,
-                 log: logging.Logger, presence: Callable[[], tuple[float, bool]] | None = None):
+    def __init__(self, cfg: config.Config, store: config.Store, log: logging.Logger, presence: Callable[[], tuple[float, bool]] | None = None):
         self.log = log
         self.presence = presence  # seconds since any input at the PC (None = unknown: treated as away)
         self.store = store
@@ -38,10 +63,10 @@ class Agent(HookMixin):
         self._dirty = threading.Event()
         self._pend_lock = threading.Lock()
         self._pending: dict[str, tuple[config.Shortcut, float]] = {}
-        self.dialogs = Dialogs(self, idle, lambda: self.config().behavior.pc_handback, log)
+        self.dialogs = Dialogs(self, log)
         self.dialogs.on_change = self.mark_dirty
-        self._sessions_file = config.sessions_path()  # fixed at start: a late save must not land elsewhere
-        self._load_sessions()
+        self._tails: dict[str, Tail] = {}
+        self._tail_lock = threading.Lock()
 
     # ---- settings ----
 
@@ -72,60 +97,110 @@ class Agent(HookMixin):
         self._dirty.set()
 
     def run(self, stop: threading.Event) -> None:
-        """Pushes status updates to keypads until stop is set, and keeps the
-        sessions on disk (at most every few seconds)."""
-        saved_at, unsaved = 0.0, False
+        """Follows the sessions' transcripts and pushes status updates to the
+        keypads until stop is set."""
+        self.discover()
+        next_poll = 0.0
         while not stop.is_set():
-            if self._dirty.wait(0.5):
-                time.sleep(0.08)  # coalesce bursts of hook events
+            if self._dirty.wait(POLL_EVERY):
+                time.sleep(0.08)  # coalesce bursts of events
                 self._dirty.clear()
                 self.push_status()
-                unsaved = True
-            if unsaved and time.monotonic() - saved_at > SAVE_EVERY:
-                self._save_sessions()
-                saved_at, unsaved = time.monotonic(), False
-        if unsaved:
-            self._save_sessions()
+            if time.monotonic() >= next_poll:
+                next_poll = time.monotonic() + POLL_EVERY
+                self.sync()
 
-    def _load_sessions(self) -> None:
-        try:
-            self.sessions.restore(json.loads(self._sessions_file.read_text(encoding="utf-8")))
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as e:
-            self.log.warning("could not restore sessions: %s", e)
+    # ---- the live feed: the sessions' transcripts ----
 
-    def _save_sessions(self) -> None:
-        """The session list and transcripts (already redacted), for the user only."""
+    def discover(self, root: Path | None = None) -> None:
+        """Picks up sessions that were already running when the agent started:
+        their transcripts under ~/.claude/projects, touched a few minutes ago."""
+        from .. import claudecfg
+
+        root = root or claudecfg.home() / "projects"
+        now = time.time()
         try:
-            config.write_atomic(self._sessions_file, json.dumps(self.sessions.dump()), 0o600)
-        except OSError as e:
-            self.log.warning("could not save sessions: %s", e)
+            files = [f for f in root.glob("*/*.jsonl") if now - f.stat().st_mtime < DISCOVER_WITHIN]
+        except OSError:
+            return
+        for f in sorted(files, key=lambda f: f.stat().st_mtime)[-8:]:
+            if self.sessions.get(f.stem) is None:
+                self.sessions.touch(f.stem, IDLE, "Ready", "")
+                self.sessions.set_transcript(f.stem, str(f))
+        self.sync()
+
+    def forget(self, sid: str) -> None:
+        with self._tail_lock:
+            self._tails.pop(sid, None)
+
+    def sync(self, only: str = "") -> None:
+        """Reads what the sessions' transcripts gained since last time (all of
+        them, or just `only`) and mirrors it on the keypads."""
+        changed = False
+        for x in self.sessions.live():
+            if (only and x.id != only) or not x.transcript:
+                continue
+            with self._tail_lock:
+                tail = self._tails.get(x.id)
+                if tail is None or tail.path != x.transcript:
+                    tail = self._tails[x.id] = Tail(x.transcript)
+                first, before = not tail.seen, tail.activity
+                entries = tail.poll()
+                moved = tail.activity - before
+            if tail.title:
+                self.sessions.set_name(x.id, tail.title)
+            if tail.mode:
+                self.sessions.set_mode(x.id, tail.mode)
+            self.sessions.set_cwd(x.id, tail.cwd)
+            if first or not entries and not moved:
+                changed = changed or first
+                for e in entries if first else []:
+                    self.sessions.add_log(x.id, {"k": e.kind, "t": e.text})
+                continue
+            self.follow(x.id, entries, moved)
+            changed = True
+        if changed:
+            self.mark_dirty()
+
+    def follow(self, sid: str, entries: list, moved: int) -> None:
+        """New lines of a session's transcript: log them, and move its state along."""
+        for e in entries:
+            if e.kind != INTERRUPT:
+                self.sessions.add_log(sid, {"k": e.kind, "t": e.text})
+        if moved and self.dialogs.cancel(sid, "answered on the PC"):
+            self.log.info("session %s moved on while a request was open: the PC answered", short(sid))
+        s = self.sessions.get(sid)
+        if not s or s.state not in FOLLOWABLE or not entries:
+            return
+        last = entries[-1]
+        if last.kind == INTERRUPT:
+            self.sessions.touch(sid, IDLE, "Interrupted", "")
+        elif last.kind == USER:
+            self.sessions.touch(sid, THINKING, "Working", clip(last.text, 160))
+        elif last.kind == T_TOOL:
+            self.sessions.touch(sid, TOOL, tool_verb(last.tool), last.detail)
+        elif last.kind in (CLAUDE, RESULT) and s.state in BUSY_STATES:
+            self.sessions.touch(sid, WORKING, "Working", "")
 
     # ---- Display ----
 
-    def targets(self, project: str) -> list[str]:
-        """Connected keypads whose project filter accepts project."""
+    def targets(self) -> list[str]:
+        """The keypads that are connected over Wi-Fi."""
         if self.hub is None:
             return []
-        return [c.id for c in self.hub.conns() if self.accepts(c.id, project)]
+        return [c.id for c in self.hub.conns() if c.live]
 
     def send_to(self, dev_id: str, msg: dict[str, Any]) -> None:
         if self.hub and (c := self.hub.get(dev_id)):
             c.send(msg)
-
-    def accepts(self, dev_id: str, project: str) -> bool:
-        d = self.store.device(dev_id)
-        if d is None or not d.projects or not project:
-            return True
-        return any(p.lower() == project.lower() for p in d.projects)
 
     def toast(self, text: str, level: str = "info", ms: int = 2500) -> None:
         """A short message on every keypad."""
         if self.hub is None:
             return
         for c in self.hub.conns():
-            c.send({"t": "toast", "text": proto.fit(clip(text, 60), proto.TOAST_TEXT), "level": level, "ms": ms})
+            if c.live:
+                c.send({"t": "toast", "text": proto.fit(clip(text, 60), proto.TOAST_TEXT), "level": level, "ms": ms})
 
     def shown_id(self) -> str:
         """The session the keypads show: the one a request on screen came
@@ -141,46 +216,60 @@ class Agent(HookMixin):
         live = self.sessions.live()
         shown = short(self.shown_id())
         menu = bool(self.config().shortcuts) and bool(shown)
-        for c in self.hub.conns():
-            lst = wire(live, lambda p, i=c.id: self.accepts(i, p))
+        for c in (c for c in self.hub.conns() if c.live):
+            lst = wire(live)
             sel = shown
             if not any(s["id"] == sel for s in lst):
                 sel = lst[0]["id"] if lst else ""
             st: dict[str, Any] = {"t": "status", "sessions": lst, "sel": sel, "pinned": self.sessions.pinned(),
                                   "queue": self.dialogs.queued(), "paused": self.paused(), "menu": menu}
-            log = next((x.log for x in live if short(x.id) == sel), [])
-            # The transcript is the flexible part: drop its oldest entries until
-            # its text fits the keypad's buffer and the message the protocol limit.
-            while log and sum(len(x["t"].encode()) + 1 for x in log) > proto.LOG_POOL:
-                log = log[1:]
-            while True:
-                if log:
-                    st["log"] = log
-                else:
-                    st.pop("log", None)
-                try:
-                    proto.encode(st)
-                    break
-                except proto.InvalidMessage:
-                    if not log:
-                        break
-                    log = log[1:]
             c.send(st)
+            self.push_feed(c, sel, next((x.log for x in live if short(x.id) == sel), []))
+
+    def push_feed(self, c: Conn, sel: str, log: list[dict[str, str]]) -> None:
+        """Brings a keypad's transcript up to date: only what is new (and how many
+        of the oldest entries to drop), or all of it when the session changed."""
+        # The oldest entries go until the text fits the keypad's buffer.
+        while log and sum(len(x["t"].encode()) + 1 for x in log) > proto.LOG_POOL:
+            log = log[1:]
+        prev = c.feed
+        if prev and prev[0] == sel and prev[1] == log:
+            return
+        msg: dict[str, Any] = {"t": "feed", "sid": sel}
+        added = feed_added(prev[1], log) if prev and prev[0] == sel else None
+        if added is not None:
+            msg["drop"], msg["add"] = added
+        else:
+            msg["full"] = log
+        while True:  # and the oldest go until the message fits the protocol limit
+            try:
+                proto.encode(msg)
+                break
+            except proto.InvalidMessage:
+                if "full" not in msg:  # too big as a delta: send all of it instead
+                    msg = {"t": "feed", "sid": sel, "full": log}
+                elif msg["full"]:
+                    log = log[1:]
+                    msg["full"] = log
+                else:
+                    return
+        if c.send(msg):
+            c.feed = (sel, log)
 
     # ---- device events ----
 
     def connected(self, c: Conn) -> None:
-        self.push_status()
-        self.dialogs.reshow(c.id)
+        c.feed = None  # a (re)connected keypad has no transcript yet
+        if c.live:  # a cable used for setup shows nothing
+            self.push_status()
+            self.dialogs.reshow(c.id)
 
     def disconnected(self, c: Conn) -> None:
         self.mark_dirty()
 
     def message(self, c: Conn, m: dict[str, Any]) -> None:
         t = m["t"]
-        if t == "ack":
-            self.dialogs.ack(c.id, m.get("id", ""))
-        elif t == "press":
+        if t == "press":
             if m.get("id") == "status":
                 if m.get("act") == "menu":
                     threading.Thread(target=self.shortcut_menu, daemon=True).start()
@@ -194,16 +283,6 @@ class Agent(HookMixin):
             else:
                 self.sessions.select(m.get("sid", ""))
             self.mark_dirty()
-        elif t == "wifi":
-            self.mark_dirty()
-        elif t == "mic":
-            self.on_mic(c, m["act"] == "start")
-
-    def on_mic(self, c: Conn, talking: bool) -> None:
-        """The mic button (push-to-talk): held = talking. The button is
-        programmed end to end but nothing consumes it yet; this is where voice
-        input to the shown session plugs in once audio is wired."""
-        self.log.info("mic %s on %s (no audio is captured yet)", "start" if talking else "stop", c.id)
 
     # ---- shortcuts ----
 
@@ -229,7 +308,7 @@ class Agent(HookMixin):
                 threading.Thread(target=self.queue_shortcut, args=(p["idx"], cur.id), daemon=True).start()
 
         try:
-            self.dialogs.run(ctx, cur.project, "menu", False, fn, sid=cur.id)
+            self.dialogs.run(ctx, cur.project, "menu", fn, sid=cur.id)
         except DialogError:
             pass
 
@@ -266,17 +345,16 @@ class Agent(HookMixin):
         return idx if press.get("act") == "pick" and isinstance(idx, int) else None
 
     @staticmethod
-    def yes_no(project: str, title: str, question: str, esc: str) -> dict[str, Any]:
+    def yes_no(project: str, title: str, question: str) -> dict[str, Any]:
         """A select screen with 1. Yes / 2. No (option 0 is Yes)."""
-        return {"tpl": "select", "title": title, "project": project, "q": question, "items": ["Yes", "No"], "esc": esc}
+        return {"tpl": "select", "title": title, "project": project, "q": question, "items": ["Yes", "No"]}
 
     # ---- snapshot for the tray and CLI ----
 
     def snapshot(self) -> dict[str, Any]:
         live = self.sessions.live()
         conns = self.hub.conns() if self.hub is not None else []
-        # which sessions the connected keypads list (project filters, at most 8 each)
-        on = {x["id"] for c in conns for x in wire(live, lambda p, i=c.id: self.accepts(i, p))}
+        on = {x["id"] for x in wire(live)}  # the sessions a keypad lists (the latest 8)
         sessions = []
         for x in live:
             v = x.view()
@@ -285,7 +363,8 @@ class Agent(HookMixin):
         return {
             "host_id": self.store.host_id(), "paused": self.paused(), "busy": self.dialogs.busy(),
             "queue": self.dialogs.queued(), "keypads": [c.info() for c in conns],
-            "devices": [d.view() for d in self.store.devices()], "sessions": sessions,
+            "devices": [d.view() for d in self.store.devices()], "problems": dict(self.hub.problems) if self.hub else {},
+            "sessions": sessions,
             "current": self.shown_id(), "pinned": self.sessions.pinned(),
             "shortcuts": self.shortcut_labels(),
         }

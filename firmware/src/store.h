@@ -10,7 +10,6 @@ struct Stored {
     uint8_t key[32];     // pairing key
     bool paired;
     char name[25];
-    bool dark;
     uint8_t brightness;  // 5..100
 };
 

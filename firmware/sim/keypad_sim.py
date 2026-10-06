@@ -79,6 +79,14 @@ class Sim:
                 return
 
     def msg(self, m: dict):
+        """Sends a host message. A status carrying a "log" is sent the way the host does: status, then the feed."""
+        if m.get("t") == "status" and "log" in m:
+            m = dict(m)
+            log = m.pop("log")
+            self.msg(m)
+            if m.get("sel"):
+                self.msg({"t": "feed", "sid": m["sel"], "full": log})
+            return
         self._cmd("msg " + json.dumps(m, ensure_ascii=False, separators=(",", ":")))
 
     def key(self, k: int, hold_ms: int = 120):
@@ -90,6 +98,23 @@ class Sim:
     def host(self, alive: bool):
         """The simulated host pings every 2 s while alive; silence it to see the keypad lose the host."""
         self._cmd("host " + ("on" if alive else "off"))
+
+    def backlight(self) -> int:
+        """The backlight percent the keypad would set right now (dimmed when idle on battery)."""
+        self.p.stdin.write("backlight\n")
+        self.p.stdin.flush()
+        while True:
+            out = self.p.stdout.readline()
+            if not out:
+                raise RuntimeError("simulator exited")
+            if out.startswith("TX "):
+                self.tx.append(json.loads(out[3:]))
+            elif out.startswith("BACKLIGHT "):
+                return int(out.split()[1])
+
+    def power(self, source: str):
+        """"usb" (a wire: the screen never dims) or "battery" (it dims when idle)."""
+        self._cmd("power " + source)
 
     def turn(self, steps: int):
         self._cmd(f"turn {steps}")

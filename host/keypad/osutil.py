@@ -1,5 +1,5 @@
-"""The few OS facilities the agent needs: last-input time (PC hand-back),
-dark mode (keypad "system" theme), the current Wi-Fi SSID (pairing dialog)
+"""The few OS facilities the agent needs: last-input time (ask on the keypad only when you are away),
+the current Wi-Fi SSID (pairing dialog)
 and opening folders and files."""
 
 from __future__ import annotations
@@ -27,10 +27,9 @@ def _out(args: list[str]) -> str:
 _cg = None
 
 
-def idle() -> tuple[float, bool]:
-    """Seconds since the last input of this user session (keyboard only on
-    macOS: moving the mouse near the keypad should not count as "at the PC";
-    keyboard and mouse on Windows). ok is False when unknown."""
+def idle_any() -> tuple[float, bool]:
+    """Seconds since any input (keyboard or mouse) in this user session: whether you are at the PC
+    at all. Used to ask on the keypad only when you are away. ok is False when unknown."""
     global _cg
     if sys.platform == "darwin":
         try:
@@ -38,10 +37,10 @@ def idle() -> tuple[float, bool]:
                 _cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
                 _cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
                 _cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
-            # kCGEventSourceStateCombinedSessionState = 0, kCGEventKeyDown = 10
-            s = _cg.CGEventSourceSecondsSinceLastEventType(0, 10)
+            # kCGEventSourceStateCombinedSessionState = 0, kCGAnyInputEventType = 0xFFFFFFFF
+            s = _cg.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)
             return (s, True) if s >= 0 else (0.0, False)
-        except OSError:
+        except (OSError, AttributeError):
             return 0.0, False
     if sys.platform == "win32":
         class LASTINPUTINFO(ctypes.Structure):
@@ -53,33 +52,6 @@ def idle() -> tuple[float, bool]:
         now = ctypes.windll.kernel32.GetTickCount() & 0xFFFFFFFF
         return ((now - lii.dwTime) & 0xFFFFFFFF) / 1000.0, True
     return 0.0, False
-
-
-def idle_any() -> tuple[float, bool]:
-    """Seconds since any input, mouse included: whether you are at the PC at
-    all (idle() counts only the keyboard on macOS, for the hand-back)."""
-    if sys.platform == "darwin":
-        try:
-            idle()  # loads CoreGraphics
-            s = _cg.CGEventSourceSecondsSinceLastEventType(0, 0xFFFFFFFF)  # kCGAnyInputEventType
-            return (s, True) if s >= 0 else (0.0, False)
-        except (OSError, AttributeError):
-            return 0.0, False
-    return idle()  # Windows: keyboard and mouse already
-
-
-def dark_mode() -> bool:
-    if sys.platform == "darwin":
-        return "Dark" in _out(["defaults", "read", "-g", "AppleInterfaceStyle"])
-    if sys.platform == "win32":
-        import winreg
-
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
-                return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
-        except OSError:
-            return False
-    return True
 
 
 def ssid() -> str:

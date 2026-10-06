@@ -42,6 +42,27 @@ def usb_ports() -> list[str]:
         return []
 
 
+def keypad_id(serial_number: str | None) -> str:
+    """The keypad id (kp- and the last 3 bytes of its MAC) from the USB serial number, which
+    is the MAC address ("68:B6:B3:22:F9:0C" -> "kp-22f90c"); "" if it is not one."""
+    parts = (serial_number or "").split(":")
+    if len(parts) != 6 or not all(len(p) == 2 for p in parts):
+        return ""
+    return "kp-" + "".join(parts[3:]).lower()
+
+
+def usb_devices() -> list[tuple[str, str]]:
+    """(port, keypad id) of every Espressif native-USB serial device. The id is known before the
+    port is opened, so a keypad that is already connected can be left alone: opening its port
+    toggles the reset lines and reboots it."""
+    from serial.tools import list_ports
+
+    try:
+        return [(p.device, keypad_id(p.serial_number)) for p in list_ports.comports() if p.vid == proto.USB_VENDOR_ID]
+    except Exception:
+        return []
+
+
 class UsbLink(Link):
     kind = "usb"
 

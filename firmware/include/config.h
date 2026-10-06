@@ -9,7 +9,7 @@
 #define KEYPAD_FW_VERSION "2.0.0-dev"   // release builds pass the tag (Makefile, CI)
 #endif
 
-constexpr int PROTOCOL_VERSION = 2;
+constexpr int PROTOCOL_VERSION = 3;
 constexpr uint16_t TCP_PORT = 7470;
 
 #if !defined(NATIVE_TEST) && (!defined(ARDUINO_USB_CDC_ON_BOOT) || ARDUINO_USB_CDC_ON_BOOT == 0)
@@ -36,16 +36,6 @@ constexpr uint8_t KEY_ENC = 0;                   // encoder push switch
 constexpr uint8_t KEY_UP = 4, KEY_DOWN = 8, KEY_ESC = 5, KEY_SESSIONS = 6, KEY_ENTER = 7;
 constexpr uint8_t DIRECT_PICKS = 3;              // keys 1..3 pick options 1..3
 
-// ---- Microphone button ------------------------------------------------------------
-// A ninth button for push-to-talk: hold to talk, release to stop. GPIO14 is the
-// free pin that is also the board's right-hand button, so it works before you
-// wire anything (button to GND, INPUT_PULLUP). Set -1 to turn it off. The keypad
-// sends {"t":"mic","act":"start"|"stop"} to the host (proto/PROTOCOL.md); capturing
-// audio is a later step. For an I2S microphone (INMP441 and similar) GPIO10, 11 and 12
-// are free on the header (BCLK / WS / DATA); GPIO13 is spare. Nothing else uses them.
-constexpr int8_t MIC_PIN = 14;
-constexpr uint8_t KEY_MIC = 9;                   // key id of the mic button in KeyEvent
-
 constexpr int ENC_SW_PIN = 1;
 constexpr int ENC_DT_PIN = 2;
 constexpr int ENC_CLK_PIN = 3;
@@ -62,9 +52,6 @@ constexpr uint32_t DEBOUNCE_MS = 30;
 constexpr uint32_t STALE_PRESS_MS = 150;   // a press must start this long after its screen appeared
 constexpr uint32_t REPEAT_AFTER_MS = 450;  // holding 4 or 8 (cursor, scroll) repeats after this...
 constexpr uint32_t REPEAT_EVERY_MS = 110;  // ...at this rate; the keys that never decide anything
-constexpr uint32_t TEST_HOLD_MS = 1500;    // hold 1 while waiting for the PC: key test
-constexpr uint32_t TEST_EXIT_MS = 2000;    // hold 8 in key test: leave
-constexpr uint32_t HELLO_EVERY_MS = 3000;
 constexpr uint32_t HOST_TIMEOUT_MS = 6000;
 constexpr uint32_t HANDSHAKE_MS = 5000;
 constexpr uint32_t SENT_MS = 900;

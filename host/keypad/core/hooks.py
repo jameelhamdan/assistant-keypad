@@ -12,18 +12,12 @@ from .sessions import (
     CONTINUING,
     DONE,
     ENDED,
-    FAILED,
     IDLE,
-    INPUT,
-    LOG_CLAUDE,
     LOG_RESULT,
-    LOG_TOOL,
-    LOG_USER,
     PERMISSION,
     QUESTION,
     STOPPED,
     THINKING,
-    TOOL,
     WORKING,
     short,
 )
@@ -31,7 +25,6 @@ from .text import (
     always_label,
     clip,
     details,
-    first_line,
     first_non_empty,
     permission_question,
     permission_title,
@@ -40,7 +33,6 @@ from .text import (
     s,
     summarize,
     tool_name,
-    tool_verb,
 )
 
 if TYPE_CHECKING:
@@ -49,9 +41,6 @@ if TYPE_CHECKING:
 CONTINUE_REASON = ("The user asked from the hardware keypad that you continue working. Continue from the "
                    "current task and make further useful progress. If the task is genuinely complete, say so "
                    "briefly and stop.")
-KEYPAD_CONTEXT = ("[keypad] The user's hardware keypad (small screen + 8 buttons) is connected. When you need "
-                  "a decision or clarification, prefer the AskUserQuestion tool or mcp__keypad__ask_user with "
-                  "short, enumerable options (yes/no, or a few short choices) so the user can answer from the keypad.")
 
 
 class Question:
@@ -90,15 +79,6 @@ def remote_instruction(label: str, prompt: str) -> str:
     return f'[keypad] The user sent this instruction from the hardware keypad (shortcut "{label}"): {prompt}'
 
 
-def claude_texts(v: Any) -> list[dict[str, str]]:
-    """The hook shim's transcript_texts."""
-    out = []
-    for m in v if isinstance(v, list) else []:
-        if t := s(m, "text").strip():
-            out.append({"id": s(m, "id"), "text": redact(t)})
-    return out
-
-
 def clip_all(items: list[str]) -> list[str]:
     return [clip(x, 40) for x in items]
 
@@ -118,101 +98,55 @@ def question_text(text: str, options: list[str], descriptions: list[str]) -> dic
 
 
 class HookMixin:
-    """Hook handling for Agent (kept apart for readability)."""
+    """Hook handling for Agent (kept apart for readability). Hooks only decide:
+    permissions, questions and stop. What the keypad shows of the session comes
+    from its transcript (core/transcript.py)."""
 
-    def hook(self: Agent, ctx: Ctx, event: str, payload: dict[str, Any], pids: list[int] | None = None) -> dict[str, Any]:
+    def hook(self: Agent, ctx: Ctx, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            return self._hook(ctx, event, payload or {}, pids or [])
+            return self._hook(ctx, event, payload or {})
         except Exception:  # never let a bug turn into a decision
             self.log.exception("hook handler failed (%s)", event)
             return {}
 
-    def _hook(self: Agent, ctx: Ctx, event: str, p: dict[str, Any], pids: list[int]) -> dict:
+    def _hook(self: Agent, ctx: Ctx, event: str, p: dict[str, Any]) -> dict:
         out: dict[str, Any] = {}
         sid = clip(s(p, "session_id"), 64) or "unknown"
         cwd = s(p, "cwd")
         tool = s(p, "tool_name")
         inp = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
-        subagent = bool(s(p, "agent_id"))
-
-        def touch(state: str, title: str, detail: str) -> None:
-            self.sessions.touch(sid, state, title, clip(detail, 160), cwd, pids)
-            self.mark_dirty()
-
-        # Mirror the terminal: the tab's title, the permission mode and Claude's latest messages.
-        self.sessions.set_name(sid, redact(s(p, "session_title")))
-        if "permission_mode" in p:
-            self.sessions.set_mode(sid, s(p, "permission_mode"))
-        texts = claude_texts(p.get("transcript_texts"))
-        if not subagent and texts:
-            self.sessions.add_claude_texts(sid, texts, before_tool=event in ("PostToolUse", "PostToolUseFailure"))
-            self.mark_dirty()
-
-        def log_line(kind: str, text: str) -> None:
-            if not subagent:
-                self.sessions.add_log(sid, {"k": kind, "t": text if kind in (LOG_CLAUDE, LOG_USER) else clip(text, 200)})
 
         if event == "SessionStart":
-            self.sessions.start(sid, cwd, pids)
+            self.sessions.start(sid, cwd)
+        else:
+            self.sessions.set_cwd(sid, cwd)
+        self.sessions.set_transcript(sid, s(p, "transcript_path"))
+        if "permission_mode" in p:
+            self.sessions.set_mode(sid, s(p, "permission_mode"))
+
+        if event == "SessionStart":
+            self.sync(sid)  # whatever the transcript holds now is history; what follows is live
             self.mark_dirty()
-            return self.announce("SessionStart", out)
-        if event == "SessionEnd":
-            touch(ENDED, "Session ended", s(p, "reason"))
+        elif event == "SessionEnd":
+            self.sessions.touch(sid, ENDED, "Session ended", clip(s(p, "reason"), 160), cwd)
             self.take_pending(sid)
+            self.forget(sid)
+            self.mark_dirty()
         elif event == "UserPromptSubmit":
             self.sessions.reset_continues(sid)
-            log_line(LOG_USER, redact(s(p, "prompt")))
-            touch(THINKING, "Working", redact(s(p, "prompt")))
-            return self.deliver_pending(sid, "UserPromptSubmit", self.announce("UserPromptSubmit", out))
+            self.sessions.touch(sid, THINKING, "Working", clip(redact(s(p, "prompt")), 160), cwd)
+            self.mark_dirty()
+            return self.deliver_pending(sid, "UserPromptSubmit", out)
         elif event == "PreToolUse":
-            log_line(LOG_TOOL, f"{tool_name(tool)}({summarize(tool, inp)})")
             if tool == "AskUserQuestion":
-                return self.ask_user_question(ctx, sid, cwd, pids, inp)
-            touch(TOOL, tool_verb(tool), ("[agent] " if subagent else "") + summarize(tool, inp))
-            self.sessions.enter_tool(sid)
-            if not subagent:
-                return self.deliver_pending(sid, "PreToolUse", out)
-        elif event == "PostToolUse":
-            # Subagents share the parent session's displayed state; if another
-            # tool call (main or a different subagent) is still running, a
-            # quick one finishing must not blank its state with plain "Working".
-            if self.sessions.exit_tool(sid) == 0:
-                touch(WORKING, "Working", "")
-            if not subagent:
-                return self.deliver_pending(sid, "PostToolUse", out)
-        elif event == "PostToolUseFailure":
-            self.sessions.exit_tool(sid)
-            log_line(LOG_RESULT, "Error: " + first_line(redact(s(p, "error"))))
-            touch(WORKING, "Working", tool_name(tool) + " failed: " + redact(s(p, "error")))
+                return self.ask_user_question(ctx, sid, cwd, inp)
         elif event == "PermissionRequest":
             if tool == "AskUserQuestion":  # the question itself is asked on the keypad (PreToolUse); allowing the tool is no decision
                 return {}
             sugg = p.get("permission_suggestions")
-            return self.permission(ctx, sid, cwd, pids, tool, inp, s(p, "agent_type"), sugg if isinstance(sugg, list) else [])
+            return self.permission(ctx, sid, cwd, tool, inp, s(p, "agent_type"), sugg if isinstance(sugg, list) else [])
         elif event == "Stop":
-            if not texts:  # no transcript: the final message is all we have
-                log_line(LOG_CLAUDE, redact(s(p, "last_assistant_message")))
-            return self.stop(ctx, sid, cwd, pids, redact(s(p, "last_assistant_message")))
-        elif event == "StopFailure":
-            log_line(LOG_RESULT, "Error: " + first_line(redact(s(p, "error"))))
-            touch(FAILED, "Failed", redact(s(p, "error") + " " + s(p, "error_type")))
-        elif event == "Notification":
-            msg = redact(s(p, "message"))
-            kind = s(p, "notification_type")
-            if kind == "permission_prompt":
-                if not self.dialogs.busy():
-                    touch(PERMISSION, "Permission", "Waiting on the PC")
-            elif kind == "idle_prompt":
-                touch(IDLE, "Idle", "Waiting for your input")
-            elif kind in ("elicitation_dialog", "agent_needs_input"):
-                touch(INPUT, "Input needed", msg)
-            elif msg:
-                self.toast(msg, "info", 3000)
-        return out
-
-    def announce(self: Agent, event: str, out: dict[str, Any]) -> dict[str, Any]:
-        if self.config().behavior.announce_in_context and self.targets("") and not self.paused():
-            return with_context(out, event, KEYPAD_CONTEXT)
+            return self.stop(ctx, sid, cwd, redact(s(p, "last_assistant_message")))
         return out
 
     def deliver_pending(self: Agent, sid: str, event: str, out: dict[str, Any]) -> dict[str, Any]:
@@ -222,21 +156,22 @@ class HookMixin:
         self.log.info("shortcut delivered via=%s label=%s", event, sc.label)
         return with_context(out, event, remote_instruction(sc.label, sc.prompt))
 
-    def usable(self: Agent, project: str) -> bool:
+    def usable(self: Agent) -> bool:
         """Whether the keypad should be asked at all."""
-        return not self.paused() and bool(self.targets(project))
+        return not self.paused() and bool(self.targets())
 
     # ---- permission ----
 
-    def permission(self: Agent, ctx: Ctx, sid: str, cwd: str, pids: list[int], tool: str, inp: dict,
+    def permission(self: Agent, ctx: Ctx, sid: str, cwd: str, tool: str, inp: dict,
                    agent_type: str, suggestions: list[Any]) -> dict[str, Any]:
         """Claude Code's permission dialog: 1. Yes, 2. Yes and don't ask again
         (when Claude Code suggests a rule), 3. No. Esc leaves it to the PC."""
         name, summary = tool_name(tool), summarize(tool, inp)
-        self.sessions.touch(sid, PERMISSION, "Permission", f"{name}: {summary}", cwd, pids)
+        self.sessions.touch(sid, PERMISSION, "Permission", f"{name}: {summary}", cwd)
+        self.sync(sid)
         self.mark_dirty()
         project = self.sessions.project(sid)
-        if not self.usable(project):
+        if not self.usable():
             return {}
         ctx = ctx.with_timeout(self.config().behavior.timeout)
         title = permission_title(tool)
@@ -251,9 +186,9 @@ class HookMixin:
         err: Exception | None = None
         decision = ""
         try:
-            idx = self.dialogs.run(ctx, project, "permission", True, lambda d: self.picked(d.show(ctx, {
+            idx = self.dialogs.run(ctx, project, "permission", lambda d: self.picked(d.show(ctx, {
                 "tpl": "select", "tone": "warn", "title": title, "project": project, "body": details(tool, inp),
-                "diff": tool in DIFF_TOOLS, "q": permission_question(tool, inp), "items": items, "esc": "pc"})), sid=sid)
+                "diff": tool in DIFF_TOOLS, "q": permission_question(tool, inp), "items": items})), sid=sid)
             decision = acts[idx] if idx is not None and 0 <= idx < len(acts) else ""
         except DialogError as e:
             err = e
@@ -279,23 +214,24 @@ class HookMixin:
 
     # ---- stop ----
 
-    def stop(self: Agent, ctx: Ctx, sid: str, cwd: str, pids: list[int], last: str) -> dict[str, Any]:
+    def stop(self: Agent, ctx: Ctx, sid: str, cwd: str, last: str) -> dict[str, Any]:
         """Claude finished: continue or a saved prompt; Esc leaves it to the PC."""
         cfg = self.config()
-        self.sessions.touch(sid, STOPPED, "Finished", last, cwd, pids)
+        self.sync(sid)  # Claude's last message is in the feed before the keypad asks
+        self.sessions.touch(sid, STOPPED, "Finished", clip(last, 160), cwd)
         self.mark_dirty()
         project = self.sessions.project(sid)
-        if not cfg.behavior.ask_on_stop:
+        if cfg.behavior.ask_when_finished < 0:
             self.sessions.touch(sid, DONE, "Done", last)
             return {}
         # A queued shortcut goes straight in, unless the continue limit is
         # reached: then it stays queued and the keypad asks first (below).
         if self.sessions.continues(sid) < cfg.behavior.max_continues and (sc := self.take_pending(sid)):
             return self.continue_with(sid, remote_instruction(sc.label, sc.prompt), "Shortcut: " + sc.label)
-        if not self.usable(project):
+        if not self.usable():
             return {}
         # At the PC you carry on there: asking would only hold up your next prompt.
-        if not self.away(cfg.behavior.stop_when_away):
+        if not self.away(cfg.behavior.ask_when_finished):
             self.sessions.touch(sid, IDLE, "Idle", "Waiting for your next prompt")
             self.mark_dirty()
             return {}
@@ -306,7 +242,7 @@ class HookMixin:
             if count >= max_c:
                 yes = self.picked(d.show(ctx, self.yes_no(
                     project, "Continue limit reached",
-                    f"{count} keypad continues in a row. Continue anyway? Yes resets the counter.", "pc"))) == 0
+                    f"{count} keypad continues in a row. Continue anyway? Yes resets the counter."))) == 0
                 if yes:
                     self.sessions.reset_continues(sid)
                     if sc := self.take_pending(sid):
@@ -317,7 +253,7 @@ class HookMixin:
             # A shortcut may have been queued while this request waited its turn.
             if sc := self.take_pending(sid):
                 return self.continue_with(sid, remote_instruction(sc.label, sc.prompt), "Shortcut: " + sc.label)
-            screen = self.shortcut_screen("Claude finished", ["continue"], ["keep going"], "pc")
+            screen = self.shortcut_screen("Claude finished", ["continue"], ["keep going"], "done")
             idx = self.picked(d.show(ctx, {**screen, "project": project}))
             n = len(cfg.shortcuts)
             if idx == 0:
@@ -329,7 +265,7 @@ class HookMixin:
             return None
 
         try:
-            result = self.dialogs.run(ctx, project, "stop", True, fn, sid=sid)
+            result = self.dialogs.run(ctx, project, "stop", fn, sid=sid)
         except DialogError as e:
             self.log.info("stop left to the PC reason=%s", e)
             self.sessions.touch(sid, IDLE, "Idle", "Waiting for input on the PC")
@@ -352,13 +288,13 @@ class HookMixin:
         title = first_non_empty(q.header, "Question")
         try:
             if q.yes_no or not q.options:
-                screen = {**self.yes_no(project, title, "", "pc"), **question_text(q.text, [], [])}
+                screen = {**self.yes_no(project, title, ""), **question_text(q.text, [], [])}
                 yes = self.picked(d.show(ctx, screen)) == 0
                 return Answer(["Yes" if yes else "No"], yes=yes)
             if len(q.options) > proto.MAX_ITEMS:
                 return Answer(err=ValueError("too many options"))
             screen = {"tpl": "multi" if q.multi else "select", "title": title, "project": project,
-                      **question_text(q.text, q.options, q.descriptions), "items": clip_all(q.options), "esc": "pc"}
+                      **question_text(q.text, q.options, q.descriptions), "items": clip_all(q.options)}
             p = d.show(ctx, screen)
             if q.multi:
                 vals = [q.options[i] for i in p.get("sel") or [] if 0 <= i < len(q.options)]
@@ -370,13 +306,11 @@ class HookMixin:
         except DialogError as e:
             return Answer(err=e)
 
-    def ask(self: Agent, ctx: Ctx, pid: int, cwd: str, qs: list[Question], sid: str = "") -> list[Answer]:
-        """Runs a set of questions as one dialog (MCP ask_user, AskUserQuestion)."""
+    def ask(self: Agent, ctx: Ctx, cwd: str, qs: list[Question], sid: str = "") -> list[Answer]:
+        """Runs a set of questions as one dialog (AskUserQuestion)."""
         project = project_of(cwd)
-        if pid and (sess := self.sessions.by_pid(pid)):
-            project, sid = sess.project, sess.id
         answers = [Answer(err=NoKeypad()) for _ in qs]
-        if not self.usable(project):
+        if not self.usable():
             return answers
         ctx = ctx.with_timeout(self.config().behavior.timeout)
 
@@ -387,21 +321,21 @@ class HookMixin:
                     return
 
         try:
-            self.dialogs.run(ctx, project, "question", True, fn, sid=sid)
+            self.dialogs.run(ctx, project, "question", fn, sid=sid)
         except DialogError as e:
             for a in answers:
                 if a.err is not None:
                     a.err = e
         return answers
 
-    def ask_user_question(self: Agent, ctx: Ctx, sid: str, cwd: str, pids: list[int], inp: dict) -> dict:
+    def ask_user_question(self: Agent, ctx: Ctx, sid: str, cwd: str, inp: dict) -> dict:
         """Answers Claude Code's native AskUserQuestion on the keypad by
         allowing the tool call with the answers filled in."""
-        self.sessions.touch(sid, QUESTION, "Question", "", cwd, pids)
+        self.sessions.touch(sid, QUESTION, "Question", "", cwd)
+        self.sync(sid)
         self.mark_dirty()
         raw = inp.get("questions") if isinstance(inp.get("questions"), list) else []
-        project = self.sessions.project(sid)
-        if not self.config().behavior.intercept_ask_user_question or not raw or len(raw) > 4 or not self.usable(project):
+        if not self.config().behavior.intercept_ask_user_question or not raw or len(raw) > 4 or not self.usable():
             return {}
         qs = []
         for i, q in enumerate(raw):
@@ -422,7 +356,7 @@ class HookMixin:
             if len(raw) > 1:
                 header = f"{i + 1}/{len(raw)} {header}"
             qs.append(Question(text, header, opts, multi=bool(q.get("multiSelect")), descriptions=descs))
-        answers = self.ask(ctx, 0, cwd, qs, sid)
+        answers = self.ask(ctx, cwd, qs, sid)
         out = {}
         for q, a in zip(qs, answers, strict=True):
             if a.err is not None:

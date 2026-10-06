@@ -11,7 +11,6 @@
 #include <string.h>
 
 #include "config.h"
-#include "text/arabic.h"
 #include "text/text.h"
 
 namespace {
@@ -37,11 +36,6 @@ constexpr Theme DARK = {
     rgb(215, 119, 87),  rgb(177, 185, 249), rgb(78, 186, 101),  rgb(255, 107, 128),
     rgb(255, 193, 7),   rgb(122, 180, 232), rgb(40, 40, 40),
 };
-constexpr Theme LIGHT = {
-    rgb(255, 255, 255), rgb(0, 0, 0),       rgb(102, 102, 102), rgb(204, 204, 204),
-    rgb(215, 119, 87),  rgb(87, 105, 247),  rgb(44, 122, 57),   rgb(171, 43, 63),
-    rgb(150, 108, 30),  rgb(40, 110, 190),  rgb(238, 238, 238),
-};
 const Theme *T = &DARK;
 
 uint16_t tone(Tone t) {
@@ -55,11 +49,9 @@ uint16_t tone(Tone t) {
     }
 }
 
-// This state taxonomy is duplicated by hand in three other places that must
-// stay in sync: host/keypad/core/sessions.py (BUSY_STATES/WAITING_STATES/
-// WORKING_STATES), host/keypad/tray.py (state_word/_color_for), and
-// stateWord()/waiting() further down this file. A new state added on one
-// side needs updating in all four.
+// This state taxonomy is spelled out in host/keypad/core/sessions.py (the
+// state sets), host/keypad/tray.py (state_word) and here (busy, stateWord,
+// waiting). host/tests/test_states.py fails when they drift apart.
 bool busy(const char *s) {
     return !strcmp(s, "working") || !strcmp(s, "thinking") || !strcmp(s, "tool") || !strcmp(s, "continuing");
 }
@@ -81,7 +73,6 @@ struct Font {
 };
 const Font MONO = {u8g2_font_spleen8x16_mf, 8, 12, 16};
 const Font SMALL = {u8g2_font_spleen6x12_mf, 6, 9, 12};
-const Font ARABIC = {u8g2_font_unifont_t_arabic, 8, 13, 16};
 
 constexpr int16_t X0 = 4;        // left margin
 constexpr int16_t COLS = 39;     // (320 - 2 * 4) / 8
@@ -92,39 +83,27 @@ int measureWith(const Font &f, const char *s, size_t len) {
     if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
     memcpy(tmp, s, len);
     tmp[len] = '\0';
-    if (textHasArabic(tmp)) return arabicCellCount(tmp) * ARABIC.cw;
     return utf8Length(tmp) * f.cw;   // monospace: cells x cell width
 }
 
 int measureCb(const char *s, size_t len, void *ctx) { return measureWith(*(const Font *)ctx, s, len); }
 
-// One line at (x, top y); Arabic is shaped and laid out right-to-left. align 'L' | 'R' | 'C'.
+// One line at (x, top y). align 'L' | 'R' | 'C'.
 int16_t drawLine(const Font &f, int16_t x, int16_t y, int16_t w, const char *s, size_t len, uint16_t color,
                  char align = 'L', bool bold = false) {
-    static char line[512], visual[1024];
+    static char line[512];
     if (len >= sizeof(line)) len = sizeof(line) - 1;
     memcpy(line, s, len);
     line[len] = '\0';
-    const char *out = line;
-    const Font *use = &f;
-    int width;
-    if (textHasArabic(line)) {
-        char base = textBaseDirection(line);
-        width = arabicToVisual(line, base, visual, sizeof(visual)) * ARABIC.cw;
-        out = visual;
-        use = &ARABIC;
-        if (align == 'L' && base == 'R') align = 'R';
-    } else {
-        width = utf8Length(line) * f.cw;
-    }
+    int width = utf8Length(line) * f.cw;
     int16_t cx = align == 'R' ? x + w - width : align == 'C' ? x + (w - width) / 2 : x;
-    cv->setFont(use->data);
+    cv->setFont(f.data);
     cv->setTextColor(color);
-    cv->setCursor(cx, y + use->ascent);
-    cv->print(out);
+    cv->setCursor(cx, y + f.ascent);
+    cv->print(line);
     if (bold) {   // terminal-style bold: overstrike one pixel to the right
-        cv->setCursor(cx + 1, y + use->ascent);
-        cv->print(out);
+        cv->setCursor(cx + 1, y + f.ascent);
+        cv->print(line);
     }
     return cx + width;
 }
@@ -242,7 +221,7 @@ void wifiBars(int16_t x, int16_t y, const Model &m) {
     }
 }
 
-// Right-aligned indicators: [usb] [wifi bars] [battery]. Returns the x where they start.
+// Right-aligned indicators: [wifi bars] [battery]. Returns the x where they start.
 int16_t indicators(const Model &m, int16_t y) {
     int16_t x = 320 - X0;
     if (m.battery >= 0) {
@@ -255,11 +234,6 @@ int16_t indicators(const Model &m, int16_t y) {
         wifiBars(x, y + 3, m);
         x -= 6;
     }
-    if (m.usbHost || m.wifi == WifiState::Off) {
-        x -= 3 * SMALL.cw;
-        text(SMALL, x, y + 2, "usb", m.usbHost ? T->text : T->faint);
-        x -= 6;
-    }
     return x;
 }
 
@@ -268,15 +242,6 @@ void fmtElapsed(char *out, size_t n, uint32_t ms) {
     if (s < 60) snprintf(out, n, "%us", (unsigned)s);
     else if (s < 3600) snprintf(out, n, "%um %us", (unsigned)(s / 60), (unsigned)(s % 60));
     else snprintf(out, n, "%uh %um", (unsigned)(s / 3600), (unsigned)(s / 60 % 60));
-}
-
-// Claude Code shows a playful verb while it works; keep one per session.
-const char *gerund(const char *seed) {
-    static const char *G[] = {"Thinking", "Pondering", "Brewing", "Musing", "Noodling", "Percolating",
-                              "Conjuring", "Crafting", "Cogitating", "Simmering"};
-    unsigned h = 0;
-    for (const char *p = seed; *p; p++) h = h * 31 + (unsigned char)*p;
-    return G[h % (sizeof(G) / sizeof(G[0]))];
 }
 
 // Bottom hint line in the dim "? for shortcuts" style, or a toast / sent note.
@@ -369,7 +334,7 @@ void drawWaiting(const Model &m) {
         gElbow(x, y + 18, T->dim);
         text(MONO, x + 2 * MONO.cw, y + 18, "is the Keypad app running?", T->dim);
     }
-    snprintf(line, sizeof(line), "%s  v%s  hold 1: key test", m.id, KEYPAD_FW_VERSION);
+    snprintf(line, sizeof(line), "%s  v%s", m.id, KEYPAD_FW_VERSION);
     indicators(m, 128);
     text(SMALL, X0 + 2, 132, line, T->dim);
     hintLine(m, nullptr);
@@ -397,8 +362,8 @@ bool waiting(const char *s) {
 }
 
 // ---- the transcript, wrapped once per change ----------------------------------------
-// Rows of the wrapped transcript; flags: 1 bold and 2 code at the row's
-// start (the style markers carry over line breaks), 4 the entry's first row.
+// Rows of the wrapped transcript; flags: 1 bold, 2 code and 4 dim at the row's
+// start (the style markers carry over line breaks), 8 the entry's first row.
 struct Row {
     uint8_t e;
     uint8_t flags;
@@ -415,7 +380,7 @@ int measureRich(const char *s, size_t len, void *ctx) {
     static char tmp[1024];
     size_t n = 0;
     for (size_t i = 0; i < len && n < sizeof(tmp) - 1; i++)
-        if (s[i] != MARK_BOLD && s[i] != MARK_CODE) tmp[n++] = s[i];
+        if (!isMark(s[i])) tmp[n++] = s[i];
     return measureWith(*(const Font *)ctx, tmp, n);
 }
 
@@ -429,27 +394,26 @@ void rewrap(const StatusModel &st) {
         uint16_t pos = 0;
         for (int l = 0; l < n; l++) {
             for (; pos < wl[l].start; pos++) {
-                if (t[pos] == MARK_BOLD) style ^= 1;
-                else if (t[pos] == MARK_CODE) style ^= 2;
+                if (isMark(t[pos])) style ^= 1 << (t[pos] - MARK_BOLD);
             }
             if (nRows == MAX_ROWS) {   // keep the newest rows
                 memmove(rowsBuf, rowsBuf + 256, (MAX_ROWS - 256) * sizeof(Row));
                 nRows -= 256;
             }
-            rowsBuf[nRows++] = {(uint8_t)i, (uint8_t)(style | (l == 0 ? 4 : 0)), wl[l].start, wl[l].len};
+            rowsBuf[nRows++] = {(uint8_t)i, (uint8_t)(style | (l == 0 ? 8 : 0)), wl[l].start, wl[l].len};
         }
     }
     wrappedVer = st.logVer;
 }
 
-// One row with its styles: bold (headings, **bold**) and code (`code`, code blocks).
+// One row with its styles: bold (headings, **bold**), code (`code`, code blocks) and dim (italics, quotes).
 void drawRich(const Font &f, int16_t x, int16_t y, int16_t w, const char *s, size_t len, uint16_t base, uint8_t style) {
     size_t i = 0;
     while (i < len) {
         size_t j = i;
-        while (j < len && s[j] != MARK_BOLD && s[j] != MARK_CODE) j++;
-        if (j > i) x = drawLine(f, x, y, w, s + i, j - i, (style & 2) ? T->permission : base, 'L', style & 1);
-        if (j < len) style ^= s[j] == MARK_BOLD ? 1 : 2;
+        while (j < len && !isMark(s[j])) j++;
+        if (j > i) x = drawLine(f, x, y, w, s + i, j - i, (style & 2) ? T->permission : (style & 4) ? T->dim : base, 'L', style & 1);
+        if (j < len) style ^= 1 << (s[j] - MARK_BOLD);
         i = j + 1;
     }
 }
@@ -478,8 +442,8 @@ int drawTranscript(const StatusModel &st, int16_t top, int16_t bottom, int skip)
         if (e.k == 'u') c = mark = T->dim;
         else if (e.k == 't') mark = T->success;
         else if (e.k == 'r') c = mark = !strncmp(t, "Error", 5) || !strncmp(t, "Denied", 6) ? T->error : T->dim;
-        drawRich(f, X0 + 2 * f.cw, y, LOG_CELLS * f.cw, t + w.start, w.len, c, w.flags & 3);
-        if (!(w.flags & 4)) continue;
+        drawRich(f, X0 + 2 * f.cw, y, LOG_CELLS * f.cw, t + w.start, w.len, c, w.flags & 7);
+        if (!(w.flags & 8)) continue;
         if (e.k == 'u') text(f, X0, y, ">", T->dim);
         else if (e.k == 'r') gElbowS(X0, y, mark);
         else gDotS(X0, y, mark);
@@ -524,7 +488,7 @@ void drawStatus(Model &m) {
     int16_t y = 30;
     bool working = s && busy(s->state);
     bool asking = s && waiting(s->state);
-    int16_t statusY = 136;   // ✻ Brewing… / waiting on the PC / paused, just above the hints
+    int16_t statusY = 136;   // ✻ Working… / waiting on the PC / paused, just above the hints
     bool statusLine = working || asking || st.queue || st.paused;
     m.logMax = 0;
     if (!s) {
@@ -557,10 +521,10 @@ void drawStatus(Model &m) {
     } else {
         drawWelcome(*s, 28);
     }
-    if (working) {   // ✻ Brewing… (1m 12s)
+    if (working) {   // ✻ Working… (1m 12s)
         char el[16], line[64];
         fmtElapsed(el, sizeof(el), millis() - s->startedAt);
-        const char *verb = !strcmp(s->state, "continuing") ? "Continuing" : gerund(s->id);
+        const char *verb = !strcmp(s->state, "continuing") ? "Continuing" : "Working";
         snprintf(line, sizeof(line), "%s... (%s)", verb, el);
         gStar(X0, statusY, T->claude, (millis() / 120) & 7);
         text(MONO, X0 + 2 * MONO.cw, statusY, line, T->claude);
@@ -682,7 +646,7 @@ int16_t dialogInfo(const Model &m, int16_t xRight, int16_t y) {
 
 // What Esc does, for the hint line.
 const char *escHint(const ScreenModel &sc) {
-    return !sc.esc[0] ? "" : !strcmp(sc.esc, "pc") ? "  5 answer on PC" : "  5 back";
+    return !sc.esc[0] ? "" : !strcmp(sc.esc, "done") ? "  5 done" : "  5 back";
 }
 
 // Keeps the cursor inside a window of `rows` options; returns the first visible.
@@ -838,27 +802,6 @@ void drawPromptScreen(Model &m) {
     hintLine(m, hint);
 }
 
-void drawTest(const Model &m) {
-    gStar(X0, 3, T->claude, 4);
-    text(MONO, X0 + 2 * MONO.cw, 3, "Key test", T->text, true);
-    text(SMALL, 320 - X0 - 9 * SMALL.cw, 6, m.id, T->dim);
-    rule(22, T->faint);
-    for (uint8_t k = 1; k <= 8; k++) {
-        bool on = m.testKeys & (1u << k);
-        int16_t col = (k - 1) % 4, row = (k - 1) / 4;
-        int16_t x = X0 + col * 78, y = 30 + row * 40;
-        if (on) cv->fillRoundRect(x, y, 74, 34, 6, T->claude);
-        else box(x, y, 74, 34, T->faint);
-        char n[2] = {(char)('0' + k), 0};
-        drawLine(MONO, x, y + 9, 74, n, 1, on ? T->bg : T->text, 'C', true);
-    }
-    char line[64];
-    snprintf(line, sizeof(line), "encoder %ld%s", (long)m.testEncoder, (m.testKeys & 1) ? "  (pressed)" : "");
-    gElbow(X0, 116, T->dim);
-    text(MONO, X0 + 2 * MONO.cw, 116, line, (m.testKeys & 1) ? T->claude : T->dim);
-    hintLine(m, "hold 8 to leave");
-}
-
 void drawOta(const Model &m) {
     int16_t y = 50;
     gStar(X0 + 10, y, T->claude, (millis() / 120) & 7);
@@ -907,7 +850,6 @@ bool uiAnimating(const Model &m) {
 
 void uiRender(Model &m) {
     if (!ready) return;
-    T = m.dark ? &DARK : &LIGHT;
     cv->fillScreen(T->bg);
     switch (m.mode) {
         case Mode::Boot: drawBoot(); break;
@@ -918,7 +860,6 @@ void uiRender(Model &m) {
             if (m.screen.tpl == Tpl::Prompt) drawPromptScreen(m);
             else drawDialog(m);
             break;
-        case Mode::Test: drawTest(m); break;
         case Mode::Ota: drawOta(m); break;
     }
     cv->flush();

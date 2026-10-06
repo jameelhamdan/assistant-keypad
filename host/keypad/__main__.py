@@ -1,15 +1,11 @@
 """keypad: the whole PC side of the hardware keypad in one program.
 
-  keypad agent         background agent: owns the keypads, answers hooks (started at login)
-  keypad tray          tray icon and menu (all settings)
+  keypad tray          tray icon and menu (all settings); it runs the agent that owns the keypads and answers hooks
+  keypad agent         the agent alone, without a tray (headless)
   keypad hook <Event>  Claude Code command hook (installed into ~/.claude/settings.json)
-  keypad mcp           Claude Code MCP server (stdio)
   keypad install       connect Claude Code and start at login
   keypad uninstall [--purge]   remove both (--purge also deletes settings and pairing keys)
-  keypad claude install|uninstall|status
-  keypad service install|uninstall|status
   keypad status        show keypads and sessions
-  keypad config        open the settings file in a text editor
   keypad update <keypad-id> <firmware.bin>
   keypad version
 
@@ -23,17 +19,13 @@ import sys
 
 USAGE = """usage: keypad <command>
 
-  agent               run the background agent (normally started at login)
-  tray                show the tray icon
+  tray                show the tray icon and run the agent (started at login)
+  agent               run the agent without a tray
   install             connect Claude Code and start Keypad at login
   uninstall           undo install
-  claude  install|uninstall|status
-  service install|uninstall|status
   status              show keypads and Claude Code sessions
-  config              open the settings file in a text editor
   update <id> <file>  update a keypad's firmware
   hook <Event>        (used by Claude Code)
-  mcp                 (used by Claude Code)
   version
 """
 
@@ -61,24 +53,19 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE, end="", file=sys.stderr)
         return 0
     try:
-        if cmd == "mcp":
-            from .mcp_server import run_mcp
-
-            run_mcp()
-        elif cmd == "agent":
+        if cmd == "agent":
             from .agent_cmd import run_agent
 
             return run_agent(rest)
         elif cmd == "tray":
             from .tray import run_tray
 
-            run_tray()
+            run_tray(quiet="--quiet" in rest)
         else:
             from . import cli
 
-            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "claude": cli.cmd_claude,
-                  "service": cli.cmd_service, "status": cli.cmd_status, "config": cli.cmd_config,
-                  "settings": cli.cmd_config, "update": cli.cmd_update}.get(cmd)
+            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "status": cli.cmd_status,
+                  "update": cli.cmd_update}.get(cmd)
             if fn is None:
                 print(USAGE, end="", file=sys.stderr)
                 return 2

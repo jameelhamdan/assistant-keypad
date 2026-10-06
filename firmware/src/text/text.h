@@ -1,14 +1,16 @@
-// Pure text helpers (no Arduino): glyph sanitising and word wrapping.
+// Pure text helpers (no Arduino): glyph sanitising, UTF-8 length and word wrapping.
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
 // Replace characters our fonts cannot draw, in place: typographic
-// punctuation becomes ASCII, Latin-1 and Arabic are kept, anything else
-// becomes '?'. Control characters other than '\n' and the style markers
-// \x01 (bold) and \x02 (code) become spaces.
+// punctuation becomes ASCII, Latin-1 is kept, anything else becomes '?'. Control characters other than '\n' and the style markers
+// \x01 (bold), \x02 (code) and \x03 (dim) become spaces.
 void textSanitize(char *s);
+
+// Number of code points in a UTF-8 string (cells, on a monospace font).
+uint16_t utf8Length(const char *s);
 
 struct TextLine {
     uint16_t start;  // byte offset into the source string

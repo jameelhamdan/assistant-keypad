@@ -14,6 +14,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from .proto import VERSION
+
 KEY_SIZE = 32
 NONCE_SIZE = 16
 MAX_FRAME = 4096
@@ -100,7 +102,7 @@ class Conn:
 
 
 def _hi(**fields) -> bytes:
-    return json.dumps({"t": "hi", "v": 2, **fields}, separators=(",", ":")).encode()
+    return json.dumps({"t": "hi", "v": VERSION, **fields}, separators=(",", ":")).encode()
 
 
 def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: str) -> Conn:
@@ -119,7 +121,7 @@ def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: s
         raise SecureError("bad keypad hello") from e
     if h.get("t") == "no":
         raise SecureError(f"keypad refused: {h.get('why', '')}")
-    if h.get("t") != "hi" or h.get("v") != 2 or h.get("id") != want_id:
+    if h.get("t") != "hi" or h.get("v") != VERSION or h.get("id") != want_id:
         raise SecureError(f"unexpected keypad {h.get('id', '')!r}")
     try:
         nd = bytes.fromhex(h.get("n", ""))
@@ -137,7 +139,7 @@ def server_handshake(sock: socket.socket, dev_id: str, paired_host: str, psk_hex
         h = json.loads(read_frame(sock))
     except ValueError as e:
         raise SecureError("bad hello") from e
-    if h.get("t") != "hi" or h.get("v") != 2:
+    if h.get("t") != "hi" or h.get("v") != VERSION:
         raise SecureError("bad hello")
     if h.get("host") != paired_host:
         write_frame(sock, json.dumps({"t": "no", "why": "not paired with this host"}).encode())

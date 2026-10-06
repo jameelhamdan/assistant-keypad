@@ -102,27 +102,17 @@ jobs:
           }
           packaging\windows\build.ps1 -Version $env:GITHUB_REF_NAME
           if (-not (Test-Path dist\*setup.exe)) { throw "the installer was not built" }
-      - uses: actions/upload-artifact@v4
+      - name: attach the macOS DMG to the GitHub release
+        if: runner.os == 'macOS'
+        uses: softprops/action-gh-release@v2
         with:
-          name: installer-${{ runner.os }}
-          path: |
-            dist/*.dmg
-            dist/*setup.exe
-          if-no-files-found: error
-
-  publish:
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
+          files: dist/*.dmg
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+      - name: attach the Windows installer to the GitHub release
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
         with:
-          pattern: installer-*
-          path: out
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: out/*
+          files: dist/*setup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

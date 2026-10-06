@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import stat
@@ -8,22 +9,6 @@ import time
 import pytest
 
 from keypad import ipc
-
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="Unix socket transport")
-
-
-@pytest.fixture
-def home(monkeypatch):
-    """A short directory: Unix socket paths are limited to ~104 bytes, and
-    pytest's own temp folders on macOS are longer."""
-    import shutil
-    import tempfile
-    from pathlib import Path
-
-    d = tempfile.mkdtemp(prefix="kp", dir="/tmp")
-    monkeypatch.setenv("KEYPAD_HOME", d)
-    yield Path(d)
-    shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture
@@ -61,9 +46,19 @@ def test_round_trip_and_errors(server):
         ipc.request("GET", "/fail")
 
 
-def test_socket_is_owner_only(server, home):
-    mode = stat.S_IMODE(os.stat(home / "agent.sock").st_mode)
-    assert mode == 0o600
+def test_only_loopback_with_the_token(server, home):
+    info = json.loads((home / "agent.json").read_text())
+    s = socket.socket()
+    s.connect(("127.0.0.1", info["port"]))
+    s.sendall(ipc._pack({"m": "GET", "p": "/x", "b": None, "k": "wrong"}))
+    assert ipc._read_msg(s)["s"] == 403, "a request without the token must be refused"
+    s.close()
+    assert "/x" not in [c[1] for c in server if isinstance(c, tuple)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_info_file_is_owner_only(server, home):
+    assert stat.S_IMODE(os.stat(home / "agent.json").st_mode) == 0o600
 
 
 def test_second_server_refused(server):
@@ -71,11 +66,12 @@ def test_second_server_refused(server):
         ipc.serve(lambda *a: (200, {}), threading.Event())
 
 
-def test_handler_sees_client_hang_up(server):
+def test_handler_sees_client_hang_up(server, home):
     """A hook cancelled by Claude Code must not keep a keypad dialog open."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.connect(ipc._sock_path())
-    s.sendall(ipc._pack({"m": "POST", "p": "/wait", "b": None}))
+    info = json.loads((home / "agent.json").read_text())
+    s = socket.socket()
+    s.connect(("127.0.0.1", info["port"]))
+    s.sendall(ipc._pack({"m": "POST", "p": "/wait", "b": None, "k": info["token"]}))
     time.sleep(0.2)
     s.close()
     for _ in range(100):
@@ -89,3 +85,26 @@ def test_not_running(home):
     assert not ipc.alive()
     with pytest.raises(ipc.AgentNotRunning):
         ipc.request("GET", "/status")
+
+
+def test_stale_info_file_means_not_running(home):
+    (home / "agent.json").write_text(json.dumps({"port": 1, "token": "x"}))  # nothing listens on port 1
+    assert not ipc.alive()
+
+
+def test_info_file_removed_on_stop(home):
+    stop = threading.Event()
+    t = threading.Thread(target=ipc.serve, args=(lambda *a: (200, {}), stop), daemon=True)
+    t.start()
+    for _ in range(100):
+        if ipc.alive():
+            break
+        time.sleep(0.01)
+    assert (home / "agent.json").exists()
+    stop.set()
+    t.join(2)
+    assert not (home / "agent.json").exists()
+
+
+def test_no_legacy_agent_means_nothing_to_stop(home):
+    assert ipc.stop_legacy() is False

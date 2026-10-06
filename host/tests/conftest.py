@@ -15,11 +15,10 @@ SID = "sess-0001-aaaa"
 
 class Env:
     def __init__(self, policy, connect: bool):
-        self.idle = 3600.0
         store, err = config.Store.open()
         assert err is None
         log = logging.getLogger("test")
-        self.a = Agent(config.Config(), store, lambda: (self.idle, True), log)
+        self.a = Agent(config.Config(), store, log)
         self.hub = Hub(store, self.a, log=log)
         self.a.hub = self.hub
         self.stop = threading.Event()
@@ -36,7 +35,7 @@ class Env:
     def hook(self, event, p):
         p.setdefault("session_id", SID)
         p.setdefault("cwd", "/work/money-mind")
-        return self.a.hook(Ctx.background(), event, p, [42, 1])
+        return self.a.hook(Ctx.background(), event, p)
 
     def close(self):
         self.stop.set()
@@ -47,6 +46,7 @@ class Env:
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("KEYPAD_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))  # no real sessions to discover
     return tmp_path
 
 

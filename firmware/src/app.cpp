@@ -14,6 +14,7 @@
 #include "model.h"
 #include "mem.h"
 #include "ota.h"
+#include "power.h"
 #include "store.h"
 #include "text/text.h"
 
@@ -24,21 +25,19 @@ namespace {
 Stored stored;
 bool dirty = true;
 
-struct LinkState {
-    bool acked;          // hello_ack received on this link
+// The host talks to us over Wi-Fi. USB is only for setup: it answers hello and
+// accepts provision / unpair, nothing else (see proto/PROTOCOL.md).
+struct HostState {
+    bool greeted;        // the host's hello arrived on the Wi-Fi link
     uint32_t lastRx;     // last valid host message
-    uint32_t lastHello;
 };
-LinkState links[2];
-Src hostSrc = Src::Usb;  // link that last completed a hello
-Src screenSrc = Src::Usb;  // link the current screen came from: its answer goes back there
+HostState host;
 
 char lastAnswered[49] = "";
 char cachedPress[256] = "";
 size_t cachedLen = 0;
 uint32_t bootAt = 0;
 uint32_t lastBattery = 0;
-uint32_t logHash = 0;   // of the transcript last applied
 
 void markDirty() { dirty = true; }
 
@@ -66,14 +65,7 @@ void sendTo(Src src, JsonDocument &doc) {
 }
 
 void sendHost(JsonDocument &doc) {
-    // Prefer the link the host last greeted us on; fall back to any live one.
-    Src order[2] = {hostSrc, hostSrc == Src::Usb ? Src::Net : Src::Usb};
-    for (Src s : order) {
-        if (links[(int)s].acked) {
-            sendTo(s, doc);
-            return;
-        }
-    }
+    if (host.greeted) sendTo(Src::Net, doc);
 }
 
 const char *wifiName(WifiState w) {
@@ -93,7 +85,6 @@ void sendHello(Src src) {
     d["fw"] = KEYPAD_FW_VERSION;
     d["name"] = model.name;
     d["paired"] = stored.paired;
-    d["link"] = src == Src::Usb ? "usb" : "wifi";
     JsonObject w = d["wifi"].to<JsonObject>();
     w["state"] = wifiName(model.wifi);
     if (model.ssid[0]) w["ssid"] = model.ssid;
@@ -103,26 +94,6 @@ void sendHello(Src src) {
     }
     if (model.battery >= 0) d["bat"] = model.battery;
     sendTo(src, d);
-    links[(int)src].lastHello = millis();
-}
-
-void sendWifiReport() {
-    JsonDocument d;
-    d["t"] = "wifi";
-    d["state"] = wifiName(model.wifi);
-    d["ssid"] = model.ssid;
-    if (model.wifi == WifiState::Up) {
-        d["ip"] = model.ip;
-        d["rssi"] = model.rssi;
-    }
-    sendHost(d);
-}
-
-// The reply to a screen goes to the host that showed it (USB and Wi-Fi can
-// be different computers); if that link is gone, to any live host.
-void sendAnswer(JsonDocument &doc) {
-    if (links[(int)screenSrc].acked) sendTo(screenSrc, doc);
-    else sendHost(doc);
 }
 
 void sendOta(Src src, int off, bool haveOk, bool ok, const char *err) {
@@ -154,15 +125,12 @@ Tone toneOf(const char *s) {
 // ---- host messages ---------------------------------------------------------------------------
 
 void applySettings(JsonDocument &doc) {
-    bool dark = strcmp(doc["theme"] | "dark", "light") != 0;
     int b = doc["brightness"] | (int)stored.brightness;
     b = b < 5 ? 5 : b > 100 ? 100 : b;
     const char *name = doc["name"] | "";
-    bool changed = dark != stored.dark || b != stored.brightness || (name[0] && strcmp(name, stored.name) != 0);
-    stored.dark = dark;
+    bool changed = b != stored.brightness || (name[0] && strcmp(name, stored.name) != 0);
     stored.brightness = (uint8_t)b;
     if (name[0]) strlcpy(stored.name, name, sizeof(stored.name));
-    model.dark = dark;
     model.brightness = stored.brightness;
     copyText(model.name, sizeof(model.name), stored.name);
     if (changed) storeSave(stored);
@@ -191,30 +159,60 @@ void applyStatus(JsonDocument &doc) {
     st.queue = doc["queue"] | 0;
     st.paused = doc["paused"] | false;
     st.menu = doc["menu"] | false;
-    // the transcript: each entry's text goes into the pool, NUL-terminated.
-    // Status arrives several times a second while Claude works; the renderer
-    // re-wraps only when the transcript actually changed (FNV-1a over it).
-    st.nLog = 0;
-    size_t used = 0;
-    uint32_t hash = 2166136261u;
-    for (JsonObjectConst l : doc["log"].as<JsonArrayConst>()) {
-        if (st.nLog >= MAX_LOG || !st.logText || used + 1 >= LOG_POOL) break;
-        LogEntry &e = st.log[st.nLog++];
-        const char *k = l["k"] | "c";
-        e.k = k[0];
-        e.off = (uint16_t)used;
-        copyText(st.logText + used, LOG_POOL - used, l["t"] | "");
-        size_t n = strlen(st.logText + used) + 1;
-        hash = (hash ^ (uint8_t)e.k) * 16777619u;
-        for (size_t i = 0; i < n; i++) hash = (hash ^ (uint8_t)st.logText[used + i]) * 16777619u;
-        used += n;
-    }
-    if (hash != logHash) st.logVer++;
-    logHash = hash;
     model.view = 0;
     for (uint8_t i = 0; i < st.n; i++) if (!strcmp(st.s[i].id, st.sel)) model.view = i;
-    if (strcmp(prevSel, st.sel) != 0) model.logScroll = 0;   // another session: start at its newest line
+    if (strcmp(prevSel, st.sel) != 0) {   // another session: its transcript arrives as a new feed
+        model.logScroll = 0;
+        st.nLog = 0;
+        st.logVer++;
+    }
     if (model.pick > st.n) model.pick = st.n;
+}
+
+// ---- the transcript feed ----------------------------------------------------------------
+// Each entry's text sits in one pool, NUL-terminated, oldest first.
+size_t logUsed(const StatusModel &st) {
+    return st.nLog ? st.log[st.nLog - 1].off + strlen(st.logText + st.log[st.nLog - 1].off) + 1 : 0;
+}
+
+void dropOldest(StatusModel &st, int n) {
+    if (n <= 0) return;
+    if (n >= st.nLog) { st.nLog = 0; return; }
+    size_t used = logUsed(st), shift = st.log[n].off;
+    memmove(st.logText, st.logText + shift, used - shift);
+    for (int i = n; i < st.nLog; i++) {
+        st.log[i - n] = st.log[i];
+        st.log[i - n].off = (uint16_t)(st.log[i].off - shift);
+    }
+    st.nLog -= n;
+}
+
+void appendLog(StatusModel &st, JsonObjectConst l) {
+    const char *t = l["t"] | "";
+    while (st.nLog > 0 && (st.nLog >= MAX_LOG || logUsed(st) + strlen(t) + 2 >= LOG_POOL)) dropOldest(st, 1);
+    size_t used = logUsed(st);
+    if (used + 2 >= LOG_POOL) return;
+    LogEntry &e = st.log[st.nLog];
+    const char *k = l["k"] | "c";
+    e.k = k[0];
+    e.off = (uint16_t)used;
+    copyText(st.logText + used, LOG_POOL - used, t);
+    st.nLog++;
+}
+
+// {"t":"feed","sid":..,"full":[entries]} replaces the transcript;
+// {"t":"feed","sid":..,"drop":n,"add":[entries]} drops the n oldest entries and appends.
+void applyFeed(JsonDocument &doc) {
+    StatusModel &st = model.status;
+    if (!st.logText || strcmp(doc["sid"] | "", st.sel) != 0) return;   // not the session on screen
+    if (doc["full"].is<JsonArrayConst>()) {
+        st.nLog = 0;
+        for (JsonObjectConst l : doc["full"].as<JsonArrayConst>()) appendLog(st, l);
+    } else {
+        dropOldest(st, doc["drop"] | 0);
+        for (JsonObjectConst l : doc["add"].as<JsonArrayConst>()) appendLog(st, l);
+    }
+    st.logVer++;
 }
 
 void showScreen(JsonDocument &doc) {
@@ -289,7 +287,7 @@ void unpair() {
     memset(stored.key, 0, sizeof(stored.key));
     storeSave(stored);
     model.paired = false;
-    links[(int)Src::Net].acked = false;
+    host.greeted = false;
     applyWifiConfig();
     linkConfigure(stored);
     appToast("Wi-Fi pairing removed", Tone::Warn, 3000);
@@ -305,54 +303,46 @@ void onMessage(char *json, size_t len, Src src) {
     if (deserializeJson(doc, json, len)) return;
     const char *t = doc["t"] | "";
     if (!t[0]) return;
-    LinkState &L = links[(int)src];
-    L.lastRx = millis();
+    bool net = src == Src::Net;
+    if (net) host.lastRx = millis();
 
-    if (!strcmp(t, "who")) {   // a (new) host process wants our hello
-        L.acked = false;
+    // The host's hello: it introduces itself, we introduce ourselves. Over USB that is all it does.
+    if (!strcmp(t, "hello")) {
+        if (net) {
+            host.greeted = true;
+            copyText(model.host, sizeof(model.host), doc["host"] | "");
+            if (model.mode == Mode::Waiting || model.mode == Mode::Boot) model.mode = Mode::Status;
+            markDirty();
+        }
         sendHello(src);
         return;
     }
-#ifdef KEYPAD_DEBUG
-    if (!strcmp(t, "key")) {   // debug builds only: simulate a key press
-        uint32_t now = millis();
-        KeyEvent ev{(uint8_t)(doc["key"] | 0), KeyAction::Press, now, now, true};
-        onKey(ev);
-        markDirty();
-        return;
-    }
-#endif
     if (!strcmp(t, "ping")) {
-        if (!L.acked) sendHello(src);
+        if (net && !host.greeted) sendHello(src);
         JsonDocument p;
         p["t"] = "pong";
         p["bat"] = model.battery;   // -1 = unknown / on USB power
+        p["wifi"] = wifiName(model.wifi);
+        p["rssi"] = model.rssi;
         sendTo(src, p);
-        return;
-    }
-    if (!strcmp(t, "hello_ack")) {
-        L.acked = true;
-        hostSrc = src;
-        copyText(model.host, sizeof(model.host), doc["host"] | "");
-        if (model.mode == Mode::Waiting || model.mode == Mode::Boot) model.mode = Mode::Status;
-        markDirty();
         return;
     }
     // Pairing needs the cable (physical access).
     if (!strcmp(t, "provision")) {
-        if (src == Src::Usb) provision(doc, src);
+        if (!net) provision(doc, src);
         markDirty();
-        return;
-    }
-    // Everything below needs a greeted host.
-    if (!L.acked) {
-        sendHello(src);
         return;
     }
     // Forgetting works over the cable or from the paired host over Wi-Fi.
     if (!strcmp(t, "unpair")) {
-        unpair();
+        if (!net || host.greeted) unpair();
         markDirty();
+        return;
+    }
+    // Everything below is for the host on Wi-Fi, once it has said hello.
+    if (!net) return;
+    if (!host.greeted) {
+        sendHello(src);
         return;
     }
 
@@ -360,24 +350,17 @@ void onMessage(char *json, size_t len, Src src) {
         applySettings(doc);
     } else if (!strcmp(t, "status")) {
         applyStatus(doc);
+    } else if (!strcmp(t, "feed")) {
+        applyFeed(doc);
     } else if (!strcmp(t, "screen")) {
         const char *id = doc["id"] | "";
-        JsonDocument a;
-        a["t"] = "ack";
-        a["id"] = id;
-        sendTo(src, a);
         if (id[0] && !strcmp(id, lastAnswered)) {
             if (cachedLen) linkSend(src, cachedPress, cachedLen);   // our answer was lost: repeat it
         } else if (id[0] && !(model.screen.active && !strcmp(id, model.screen.id))) {
             showScreen(doc);
-            screenSrc = src;
         }
     } else if (!strcmp(t, "close")) {
         const char *id = doc["id"] | "";
-        JsonDocument a;
-        a["t"] = "ack";
-        a["id"] = id;
-        sendTo(src, a);
         if (model.screen.active && !strcmp(id, model.screen.id)) model.screen.active = false;
         if (!model.screen.active && model.mode == Mode::Screen) model.mode = Mode::Status;
     } else if (!strcmp(t, "toast")) {
@@ -427,7 +410,7 @@ void answer(uint8_t key, const char *act, int idx, const char *label) {
     cachedLen = serializeJson(d, cachedPress, sizeof(cachedPress));
     if (cachedLen >= sizeof(cachedPress)) cachedLen = 0;
     strlcpy(lastAnswered, sc.id, sizeof(lastAnswered));
-    sendAnswer(d);
+    sendHost(d);
     sc.active = false;   // locked: further presses do nothing until the host moves on
     strlcpy(model.sent, label, sizeof(model.sent));
     model.sentUntil = millis() + SENT_MS;
@@ -440,32 +423,6 @@ void sendSession(const char *act, const char *sid) {
     d["act"] = act;
     if (sid) d["sid"] = sid;
     sendHost(d);
-}
-
-// Push-to-talk: the mic button never reaches the screens. The host decides what
-// to do with it (nothing yet); the button also wakes the screen.
-void sendMic(bool start) {
-    JsonDocument d;
-    d["t"] = "mic";
-    d["act"] = start ? "start" : "stop";
-    sendHost(d);
-}
-
-void debugLog(const char *fmt, ...) {
-#ifdef KEYPAD_DEBUG
-    char msg[160];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
-    va_end(ap);
-    JsonDocument d;
-    d["t"] = "log";
-    d["level"] = "debug";
-    d["msg"] = msg;
-    sendTo(Src::Usb, d);
-#else
-    (void)fmt;
-#endif
 }
 
 int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -524,8 +481,8 @@ void screenKey(uint8_t key) {
     ScreenModel &sc = model.screen;
     if (key == KEY_ENTER) {
         screenEnter(key);
-    } else if (key == KEY_ESC || key == KEY_ENC) {
-        if (sc.esc[0]) answer(key, sc.esc, -1, !strcmp(sc.esc, "pc") ? "On the PC" : "Back");
+    } else if (key == KEY_ESC) {
+        if (sc.esc[0]) answer(key, sc.esc, -1, !strcmp(sc.esc, "done") ? "Done" : "Back");
     } else if (key == KEY_UP || key == KEY_DOWN) {
         screenMove(key == KEY_UP ? -1 : 1);
     } else if (key >= 1 && key <= DIRECT_PICKS) {   // number keys pick at once, like Claude Code
@@ -553,7 +510,6 @@ void chooseSession(int row) {   // 0 = follow latest, 1..n = that session
         model.view = (int8_t)(row - 1);
         st.nLog = 0;   // that transcript belonged to the previous session; the host sends the new one
         st.logVer++;
-        logHash = 0;   // whatever arrives next is new to the screen
         sendSession("select", st.s[row - 1].id);
     }
     model.logScroll = 0;
@@ -574,7 +530,7 @@ void statusKey(uint8_t key) {
         openSessions();
     } else if (key == KEY_UP || key == KEY_DOWN) {
         model.logScroll = (int16_t)clampInt(model.logScroll + (key == KEY_UP ? 1 : -1), 0, model.logMax);
-    } else if (key == KEY_ESC || key == KEY_ENC) {   // back to live: the newest line of the latest activity
+    } else if (key == KEY_ESC) {   // back to live: the newest line of the latest activity
         model.logScroll = 0;
         if (model.status.pinned) sendSession("follow", nullptr);
     } else if (key == KEY_ENTER && model.status.menu) {
@@ -583,41 +539,29 @@ void statusKey(uint8_t key) {
 }
 
 void sessionsKey(uint8_t key) {
-    if (key == KEY_SESSIONS || key == KEY_ESC || key == KEY_ENC) model.mode = Mode::Status;
+    if (key == KEY_SESSIONS || key == KEY_ESC) model.mode = Mode::Status;
     else if (key == KEY_UP || key == KEY_DOWN) model.pick = (int8_t)clampInt(model.pick + (key == KEY_UP ? -1 : 1), 0, model.status.n);
     else if (key == KEY_ENTER) chooseSession(model.pick);
     else if (key >= 1 && key <= DIRECT_PICKS && key <= model.status.n) chooseSession(key);
 }
 
 void onKey(const KeyEvent &ev) {
-    debugLog("key %u action %u clean %d mode %u active %d age %ld acked %d/%d", ev.key, (unsigned)ev.action, ev.clean,
-             (unsigned)model.mode, model.screen.active, (long)(ev.pressedAt - model.screen.shownAt), links[0].acked,
-             links[1].acked);
-    if (model.mode == Mode::Test) {
-        uint16_t bit = 1u << ev.key;
-        if (ev.action == KeyAction::Press) model.testKeys |= bit;
-        else if (ev.action == KeyAction::Release) model.testKeys &= ~bit;
-        return;
-    }
     if (ev.action != KeyAction::Press || !ev.clean) return;   // one key at a time (the matrix has no diodes)
     if (wakeOnly()) return;   // the first press on a dim screen only wakes it
+    uint8_t key = ev.key == KEY_ENC ? KEY_ENTER : ev.key;   // pressing the knob is Enter
     if (model.mode == Mode::Screen && model.screen.active) {
         // Safety: never a press that began before the screen appeared.
         if (ev.pressedAt < model.screen.shownAt + STALE_PRESS_MS) return;
-        screenKey(ev.key);
+        screenKey(key);
     } else if (model.mode == Mode::Status) {
-        statusKey(ev.key);
+        statusKey(key);
     } else if (model.mode == Mode::Sessions) {
-        sessionsKey(ev.key);
+        sessionsKey(key);
     }
 }
 
 // The encoder turns like 4 (up) and 8 (down), one step per detent.
 void onEncoder(int32_t steps) {
-    if (model.mode == Mode::Test) {
-        model.testEncoder += steps;
-        return;
-    }
     if (wakeOnly()) return;
     uint8_t key = steps < 0 ? KEY_UP : KEY_DOWN;
     for (int32_t i = steps < 0 ? -steps : steps; i > 0; i--) {
@@ -629,31 +573,15 @@ void onEncoder(int32_t steps) {
 
 // ---- periodic ----------------------------------------------------------------------------
 
-int8_t readBattery() {
-    int mv = (int)analogReadMilliVolts(PIN_BATTERY) * 2;   // 1:2 divider
-    if (mv > 4300 || mv < 2800) return -1;                 // on USB power / no battery
-    int pct = (mv - 3300) * 100 / (4150 - 3300);
-    return (int8_t)(pct < 0 ? 0 : pct > 100 ? 100 : pct);
-}
-
 void tick() {
     uint32_t now = millis();
-    // Host liveness per link.
-    for (int i = 0; i < 2; i++) {
-        LinkState &L = links[i];
-        if (L.acked && now - L.lastRx > HOST_TIMEOUT_MS) {
-            L.acked = false;
-            markDirty();
-        }
+    // Host liveness: the host pings every couple of seconds.
+    if (host.greeted && (now - host.lastRx > HOST_TIMEOUT_MS || !linkNetAuthed())) {
+        host.greeted = false;
+        markDirty();
     }
-    if (links[1].acked && !linkNetAuthed()) links[1].acked = false;
-    model.usbHost = links[0].acked;
-    model.wifiHost = links[1].acked;
-    bool connected = model.usbHost || model.wifiHost;
-
-    // Announce ourselves until greeted.
-    if (!links[0].acked && now - links[0].lastHello > HELLO_EVERY_MS) sendHello(Src::Usb);
-    if (!links[1].acked && linkNetAuthed() && now - links[1].lastHello > HELLO_EVERY_MS) sendHello(Src::Net);
+    model.wifiHost = host.greeted;
+    bool connected = host.greeted;
 
     if (model.mode == Mode::Boot && now - bootAt > 1200) model.mode = connected ? Mode::Status : Mode::Waiting;
     if (!connected && (model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Screen ||
@@ -669,18 +597,10 @@ void tick() {
     }
     if (model.mode == Mode::Screen && !model.screen.active) model.mode = Mode::Status;
 
-    // Key test: hold 1 while waiting for the PC; hold 8 to leave.
-    if (model.mode == Mode::Waiting && inputHeld(1, TEST_HOLD_MS)) {
-        model.mode = Mode::Test;
-        model.testKeys = 0;
-        model.testEncoder = 0;
-    } else if (model.mode == Mode::Test && inputHeld(8, TEST_EXIT_MS)) {
-        model.mode = connected ? Mode::Status : Mode::Waiting;
-    }
-
-    // Idle: dim the backlight (never with a request on screen, an update or the key test).
+    // Idle on battery: dim the backlight (never with a request on screen or an update, and never
+    // when running from a wire). A key press or a request lights it up again.
     bool canDim = model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Waiting;
-    bool dim = canDim && now - model.lastActivity > DIM_AFTER_MS;
+    bool dim = canDim && !model.usbPower && now - model.lastActivity > DIM_AFTER_MS;
     if (dim != model.dimmed) {
         model.dimmed = dim;
         markDirty();
@@ -690,13 +610,13 @@ void tick() {
     if (w.state != model.wifi || strcmp(w.ip, model.ip) != 0) {
         model.wifi = w.state;
         strlcpy(model.ip, w.ip, sizeof(model.ip));
-        sendWifiReport();
         markDirty();
     }
     model.rssi = w.rssi;
     if (now - lastBattery > 10000 || lastBattery == 0) {
         lastBattery = now;
-        model.battery = readBattery();
+        model.battery = batteryPercent();
+        model.usbPower = usbPowered();
     }
 }
 
@@ -718,10 +638,10 @@ void appBegin() {
              (uint8_t)(mac >> 40));
     if (!stored.name[0]) strlcpy(stored.name, model.id, sizeof(stored.name));
     model.mode = Mode::Boot;
-    model.dark = stored.dark;
     model.brightness = stored.brightness;
     model.paired = stored.paired;
     model.battery = -1;
+    model.usbPower = usbPowered();
     model.status.logText = (char *)bigAlloc(LOG_POOL);
     copyText(model.name, sizeof(model.name), stored.name);
     applyWifiConfig();
@@ -749,12 +669,7 @@ bool appLoop() {
     repeatHeldNavigation();
     KeyEvent ev;
     while (inputNext(ev)) {
-        if (ev.key == KEY_MIC) {
-            if (ev.action == KeyAction::Press) wake();
-            sendMic(ev.action == KeyAction::Press);
-        } else {
-            onKey(ev);
-        }
+        onKey(ev);
         markDirty();
     }
     if (int32_t steps = inputTakeSteps()) {
