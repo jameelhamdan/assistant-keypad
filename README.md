@@ -76,3 +76,7 @@ Tray → *Options*, *Saved prompts*, or edit `config.json` (reloaded on save).
 Uninstall: macOS tray → *Uninstall Keypad…*, then trash the app. Windows: Apps & features. Settings and keys stay in the data folder unless you delete it (`keypad uninstall --purge`).
 
 More: [architecture and security](docs/ARCHITECTURE.md) · [development](docs/DEVELOPMENT.md) · [wire protocol](proto/PROTOCOL.md)
+
+## License
+
+[MIT](LICENSE). Dependencies: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Independent project, not affiliated with Anthropic; Claude and Claude Code are Anthropic's trademarks. Provided as is, without warranty: you decide what the keypad approves.

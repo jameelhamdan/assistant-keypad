@@ -3,6 +3,8 @@ name = "keypad"
 version = "0.0.0"  # placeholder: releases take their version from the git tag (see packaging/ and CI)
 description = "Hardware keypad for Claude Code: the PC side (agent, tray, hooks)"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["../LICENSE"]
 dependencies = [
     "cryptography>=43",
     "pyserial>=3.5",

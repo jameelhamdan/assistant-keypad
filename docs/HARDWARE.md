@@ -65,6 +65,8 @@ If turning is reversed, swap the CLK and DT wires. One detent is one step.
 
 ### Battery
 
+LiPo cells can burn if shorted, punctured or charged wrongly. Use a protected cell, keep it away from the screws and solder joints, and do not charge it unattended.
+
 Plug the LiPo into the board's JST connector. Check polarity against the board's silkscreen first: connectors from different sellers are wired both ways. The firmware reads the cell through the board's 1:2 divider on GPIO4 (3.3 V = 0 %, 4.15 V = 100 %) and keeps the screen at full brightness while USB is plugged in.
 
 ### Fixed by the board
