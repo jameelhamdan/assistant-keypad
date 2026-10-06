@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 def self_path() -> str:
-    """The console executable Claude Code hooks and the MCP server should run."""
+    """The console executable Claude Code hooks should run."""
     if getattr(sys, "frozen", False):
         p = Path(sys.executable).resolve()
     else:
@@ -22,14 +22,6 @@ def self_path() -> str:
     if p.name.lower() == "keypadw.exe":  # hooks must run the console build on Windows
         p = p.with_name("keypad.exe")
     return str(p)
-
-
-def hook_path(binary: str) -> str:
-    """What Claude Code's hooks run: the bundle's small keypad-hook executable
-    (standard library only, quick to start) when present, else binary itself."""
-    p = Path(binary)
-    h = p.with_name("keypad-hook.exe" if p.suffix.lower() == ".exe" else "keypad-hook")
-    return str(h) if h.exists() else binary
 
 
 def gui_path(binary: str) -> str:

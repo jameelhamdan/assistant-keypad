@@ -1,16 +1,15 @@
 [project]
 name = "keypad"
 version = "2.2.0"
-description = "Hardware keypad for Claude Code: the PC side (agent, tray, hooks, MCP server)"
+description = "Hardware keypad for Claude Code: the PC side (agent, tray, hooks)"
 requires-python = ">=3.12"
 dependencies = [
     "cryptography>=43",
     "pyserial>=3.5",
     "zeroconf>=0.136",
-    "PyYAML>=6.0",
     "pystray>=0.19.5",
     "Pillow>=10.4",
-    "mcp>=2.2,<3",
+    "markdown-it-py>=4.2.0",
 ]
 
 [project.scripts]

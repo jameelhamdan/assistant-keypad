@@ -1,4 +1,4 @@
-"""User settings (config.yaml, edited from the tray or by hand) and machine
+"""User settings (config.json, edited from the tray or by hand) and machine
 state (state.json: host id, known keypads and their pairing keys)."""
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ MAX_SHORTCUTS = 16  # what the tray lists and the keypad pages through
 
 
 def data_dir() -> Path:
-    """The per-user data directory (config, state, logs, socket)."""
+    """The per-user data directory (config, state, logs, agent.json)."""
     return Path(_data_dir())
 
 
@@ -29,16 +29,11 @@ def log_dir() -> Path:
 
 
 def config_path() -> Path:
-    return data_dir() / "config.yaml"
+    return data_dir() / "config.json"
 
 
 def state_path() -> Path:
     return data_dir() / "state.json"
-
-
-def sessions_path() -> Path:
-    """Claude Code sessions and their transcripts, kept across agent restarts."""
-    return data_dir() / "sessions.json"
 
 
 # ---- settings -----------------------------------------------------------------
@@ -51,24 +46,15 @@ class Shortcut:
 
 
 @dataclass
-class Handback:
-    enabled: bool = False  # typing or moving the mouse at the PC would otherwise pull every request off the keypad
-
-
-@dataclass
 class Behavior:
-    ask_on_stop: bool = True
-    stop_when_away: int = 60  # s without any input before Claude finishing is asked on the keypad (0 = always)
+    ask_when_finished: int = 60  # s away from the PC before Claude finishing is asked on the keypad (0 = always, -1 = never)
     max_continues: int = 20
     intercept_ask_user_question: bool = True
-    wifi_only: bool = True  # decisions travel over Wi-Fi; USB is for power, pairing and flashing
-    announce_in_context: bool = True
     shortcut_ttl: int = 900
     timeout: int = 300  # s the keypad waits for an answer before the PC takes over
-    pc_handback: Handback = field(default_factory=Handback)
 
 
-# Earlier versions wrote these eight shortcuts into every new config.yaml.
+# Earlier versions wrote these eight shortcuts into every new config file.
 # A list that is exactly them was never edited, so it is dropped on load.
 OLD_DEFAULT_LABELS = ["Run tests", "Write tests", "Fix bugs", "Refactor", "Review", "Improve design", "Explain", "Commit"]
 
@@ -93,7 +79,7 @@ class Config:
         b.max_continues = clamp(b.max_continues, 1, 200)
         b.shortcut_ttl = clamp(b.shortcut_ttl, 30, 86400)
         b.timeout = clamp(b.timeout, 10, 3600)
-        b.stop_when_away = clamp(b.stop_when_away, 0, 3600)
+        b.ask_when_finished = clamp(b.ask_when_finished, -1, 3600)
         self.shortcuts = [s for s in self.shortcuts if s.label.strip() and s.prompt.strip()][:MAX_SHORTCUTS]
 
     # ---- (de)serialisation: the same names in YAML and over IPC ----
@@ -140,21 +126,25 @@ def _from_plain(cls: type, d: Any) -> Any:
 
 
 def load() -> tuple[Config, Exception | None]:
-    """Reads config.yaml, creating it on first run. The result is always usable:
+    """Reads config.json, creating it on first run. The result is always usable:
     an unreadable file gives the defaults."""
-    import yaml
-
     p = config_path()
     if not p.exists():
         c = Config()
+        legacy = p.with_suffix(".yaml")
+        if legacy.exists():  # Keypad 2.x kept its settings in YAML: carry them over once
+            try:
+                c = Config.from_dict(_migrate_legacy(_read_legacy_yaml(legacy.read_text(encoding="utf-8"))))
+            except (OSError, ValueError):
+                c = Config()
         try:
             save(c)
         except OSError as e:
             return c, e
         return c, None
     try:
-        c = Config.from_dict(yaml.safe_load(p.read_text(encoding="utf-8")) or {})
-    except (OSError, yaml.YAMLError) as e:
+        c = Config.from_dict(json.loads(p.read_text(encoding="utf-8")) or {})
+    except (OSError, ValueError) as e:
         return Config(), e
     if [s.label for s in c.shortcuts] == OLD_DEFAULT_LABELS:
         c.shortcuts = []
@@ -162,13 +152,82 @@ def load() -> tuple[Config, Exception | None]:
     return c, None
 
 
+def _scalar(s: str) -> Any:
+    s = s.strip()
+    if s in ("true", "false"):
+        return s == "true"
+    if s in ("null", "~", ""):
+        return None
+    if s == "[]":
+        return []
+    if s == "{}":
+        return {}
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        return s[1:-1].replace("''", "'") if s[0] == "'" else s[1:-1].encode().decode("unicode_escape")
+    try:
+        return int(s)
+    except ValueError:
+        return s
+
+
+def _read_legacy_yaml(text: str) -> dict[str, Any]:
+    """The small YAML subset Keypad 2.x wrote (nested mappings, scalars, a list of mappings),
+    read without a YAML library."""
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, Any, str]] = [(-1, root, "")]  # indent, container, the key it was filed under
+    for raw in text.splitlines():
+        if raw.lstrip().startswith("#") or not raw.strip():
+            continue
+        line = raw.rstrip()
+        indent = len(line) - len(line.lstrip())
+        body = line.strip()
+        while len(stack) > 1 and indent <= stack[-1][0] and not (body.startswith("- ") and indent == stack[-1][0] and (isinstance(stack[-1][1], list) or not stack[-1][1])):
+            stack.pop()
+        _, parent, _ = stack[-1]
+        if body.startswith("- "):
+            if isinstance(parent, dict) and not parent and len(stack) > 1:  # "key:" was a list, not a mapping
+                grand, key = stack[-2][1], stack[-1][2]
+                parent = grand[key] = []
+                stack[-1] = (stack[-1][0], parent, key)
+            if not isinstance(parent, list):
+                continue
+            item_body = body[2:]
+            k, sep, v = item_body.partition(":")
+            if sep and not item_body.startswith(("'", '"')):
+                item: dict[str, Any] = {k.strip(): _scalar(v)}
+                parent.append(item)
+                stack.append((indent + 1, item, ""))
+            else:
+                parent.append(_scalar(item_body))
+            continue
+        k, sep, v = body.partition(":")
+        if not sep or not isinstance(parent, dict):
+            continue
+        if v.strip() == "":
+            child: dict[str, Any] = {}
+            parent[k.strip()] = child
+            stack.append((indent, child, k.strip()))
+        else:
+            parent[k.strip()] = _scalar(v)
+    return root
+
+
+def _migrate_legacy(old: dict[str, Any]) -> dict[str, Any]:
+    """Keypad 2.x settings as 3.x names."""
+    b = dict(old.get("behavior") or {})
+    if b.pop("ask_on_stop", True) is False:
+        b["ask_when_finished"] = -1
+    elif "stop_when_away" in b:
+        b["ask_when_finished"] = b["stop_when_away"]
+    b.pop("stop_when_away", None)
+    b.pop("pc_handback", None)
+    return {**old, "behavior": b}
+
+
 def save(c: Config) -> None:
     """Validates c in place (clamping its values) and writes it."""
-    import yaml
-
     c.validate()
-    body = yaml.safe_dump(c.to_dict(), sort_keys=False, allow_unicode=True, width=1000)
-    write_atomic(config_path(), "# Keypad settings - edit from the tray or by hand.\n" + body, 0o644)
+    write_atomic(config_path(), json.dumps(c.to_dict(), indent=2, ensure_ascii=False) + "\n", 0o644)
 
 
 def write_atomic(path: Path, text: str | bytes, mode: int) -> None:
@@ -191,9 +250,7 @@ class Device:
     id: str
     name: str = ""
     key: str = ""  # pairing key (hex); empty = USB only
-    theme: str = "system"  # dark | light | system
     brightness: int = 80
-    projects: list[str] = field(default_factory=list)  # empty = all projects
     last_ip: str = ""
     ssid: str = ""
 

@@ -1,4 +1,4 @@
-# Builds dist\Keypad (keypad.exe, keypadw.exe, keypad-hook.exe) and, with
+# Builds dist\Keypad (keypad.exe and keypadw.exe) and, with
 # Inno Setup installed, dist\Keypad-<version>-setup.exe.
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -Version 2.1.0
 param([string]$Version = "dev")

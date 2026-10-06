@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from .. import proto
 from .links import Link, LinkClosed
 
 Policy = Callable[[dict[str, Any]], dict[str, Any]]  # screen -> press fields (key, act, idx?, sel?)
@@ -54,6 +55,8 @@ class Fake(Link):
         self._closed = threading.Event()
         self.screens: list[dict[str, Any]] = []
         self.status: list[dict[str, Any]] = []
+        self.log: list[dict[str, Any]] = []  # the transcript, kept the way the firmware does from feed messages
+        self.feeds: list[dict[str, Any]] = []
 
     def close(self) -> None:
         self._closed.set()
@@ -77,22 +80,26 @@ class Fake(Link):
 
     def _handle(self, m: dict[str, Any]) -> None:
         t = m.get("t")
-        if t == "who":  # like the firmware: introduce ourselves when asked
-            self._emit({"t": "hello", "v": 2, "id": self.id, "fw": "fake", "name": "Fake keypad", "link": "usb"})
+        if t == "hello":  # like the firmware: the host says hello, we introduce ourselves
+            self._emit({"t": "hello", "v": proto.VERSION, "id": self.id, "fw": "fake", "name": "Fake keypad"})
         elif t == "ping":
             self._emit({"t": "pong"})
         elif t == "status":
             with self._lock:
                 self.status.append(m)
+        elif t == "feed":
+            with self._lock:
+                self.feeds.append(m)
+                if "full" in m:
+                    self.log = list(m["full"])
+                else:
+                    self.log = self.log[m.get("drop", 0):] + list(m.get("add", []))
         elif t == "screen":
             with self._lock:
                 self.screens.append(m)
                 policy = self.policy
-            self._emit({"t": "ack", "id": m["id"]})
             if policy is not None:
                 threading.Thread(target=self._press, args=(m, policy), daemon=True).start()
-        elif t == "close":
-            self._emit({"t": "ack", "id": m.get("id", "")})
 
     def _press(self, s: dict[str, Any], policy: Policy) -> None:
         time.sleep(self.delay)
@@ -104,4 +111,4 @@ class Fake(Link):
 
     def status_snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
-            return list(self.status)
+            return [{**s, "log": list(self.log)} if s is self.status[-1] else s for s in self.status]

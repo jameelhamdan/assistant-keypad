@@ -171,7 +171,7 @@ void pollWifi() {
                 MDNS.addService("ckeypad", "tcp", TCP_PORT);
                 MDNS.addServiceTxt("ckeypad", "tcp", "id", devId);
                 MDNS.addServiceTxt("ckeypad", "tcp", "fw", KEYPAD_FW_VERSION);
-                MDNS.addServiceTxt("ckeypad", "tcp", "v", "2");
+                MDNS.addServiceTxt("ckeypad", "tcp", "v", "3");
                 MDNS.addServiceTxt("ckeypad", "tcp", "paired", cfg.paired ? "1" : "0");
             }
         }

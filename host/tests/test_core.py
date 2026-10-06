@@ -1,10 +1,12 @@
 import json
+import threading
 import time
 
 from conftest import SID, behavior
 
 from keypad import config
 from keypad.core import sessions as S
+from keypad.core.markdown import BOLD as B
 from keypad.core.text import redact
 from keypad.device.fake import first_key, press_label
 
@@ -18,7 +20,8 @@ def test_permission_allow(env):
     out = e.hook("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "go test ./..."}})
     assert behavior(out) == "allow" and "updatedPermissions" not in out["hookSpecificOutput"]["decision"]
     s = e.fake.last_screen()
-    assert (s["tpl"], s["title"], s["items"], s["esc"]) == ("select", "Bash command", ["Yes", "No"], "pc")
+    assert (s["tpl"], s["title"], s["items"]) == ("select", "Bash command", ["Yes", "No"])
+    assert "esc" not in s, "a permission dialog is answered on the keypad: no way out to the PC"
     assert s["body"] == "go test ./..." and s["q"] == "Do you want to proceed?"
 
 
@@ -47,9 +50,14 @@ def test_permission_deny(env):
     assert s["title"] == "Create file" and s["q"] == "Do you want to create a.go?"
 
 
-def test_permission_to_pc_falls_back(env):
-    e = env(press_label("pc"))
+def test_esc_does_nothing_on_a_permission_dialog(env):
+    e = env(press_label("pc"))  # the keypad sends Esc: there is no such way out, so it is ignored
+    cfg = config.Config()
+    cfg.behavior.timeout = 2
+    e.a.set_config(cfg)
+    start = time.time()
     assert e.hook("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "rm -rf x"}}) == {}
+    assert time.time() - start >= 1.9, "Esc must not end the request: only an answer, a timeout or a lost keypad does"
 
 
 def test_no_keypad_is_instant_noop(env):
@@ -73,25 +81,15 @@ def test_timeout_falls_back(env):
     assert e.hook("PermissionRequest", {"tool_name": "Bash"}) == {}
 
 
-def test_handback_on_pc_input(env):
-    e = env(None)
-    cfg = config.Config()
-    cfg.behavior.pc_handback.enabled = True  # off by default
-    e.a.set_config(cfg)
-    e.idle = 0  # the user keeps typing at the PC
-    start = time.time()
-    assert e.hook("PermissionRequest", {"tool_name": "Bash"}) == {}
-    assert time.time() - start < 4
-
-
-def test_no_handback_when_pc_is_idle(env):
+def test_typing_at_the_pc_does_not_take_a_request_off_the_keypad(env):
     e = env(None)
     cfg = config.Config()
     cfg.behavior.timeout = 3
     e.a.set_config(cfg)
+    e.a.presence = lambda: (0.0, True)  # the user is typing right now
     start = time.time()
     e.hook("PermissionRequest", {"tool_name": "Bash"})
-    assert time.time() - start >= 2.9, "handed back although nobody used the PC"
+    assert time.time() - start >= 2.9, "the keypad's request was handed back although nobody answered"
 
 
 def with_shortcuts(e, n=3):
@@ -111,11 +109,11 @@ def test_stop_continue(env):
     assert out["decision"] == "block"
     assert e.a.sessions.continues(SID) == 1
     s = e.fake.last_screen()
-    assert (s["tpl"], s["title"], s["items"], s["esc"]) == ("prompt", "Claude finished", ["continue"], "pc")
+    assert (s["tpl"], s["title"], s["items"], s["esc"]) == ("prompt", "Claude finished", ["continue"], "done")
 
 
-def test_stop_esc_leaves_it_to_the_pc(env):
-    e = env(press_label("pc"))
+def test_stop_done_ends_it_there(env):
+    e = env(lambda s: {"key": 5, "act": "done"})  # 5 = done: no continue, no saved prompt
     assert e.hook("Stop", {}) == {}
 
 
@@ -167,16 +165,6 @@ def test_ask_user_question(env):
     assert h["updatedInput"]["questions"] == inp["questions"]
 
 
-def test_shortcut_delivered_on_next_tool(env):
-    e = env(first_key)
-    cfg = with_shortcuts(e)
-    e.hook("SessionStart", {})
-    e.hook("UserPromptSubmit", {"prompt": "hi"})
-    e.a.queue_shortcut(1, SID)  # busy session -> queued
-    out = e.hook("PostToolUse", {"tool_name": "Bash"})
-    assert cfg.shortcuts[1].prompt in out["hookSpecificOutput"]["additionalContext"]
-
-
 def test_shortcut_for_idle_session_waits_for_next_prompt(env):
     e = env(first_key)
     cfg = with_shortcuts(e)
@@ -215,24 +203,18 @@ def test_permission_mode_mirrored(env):
     e = env(first_key)
     e.hook("UserPromptSubmit", {"prompt": "hi", "permission_mode": "acceptEdits"})
     wait_status(e, lambda st: st["sessions"] and st["sessions"][0].get("mode") == "acceptEdits")
-    e.hook("PreToolUse", {"tool_name": "Read", "permission_mode": "default"})
+    e.hook("PermissionRequest", {"tool_name": "Read", "permission_mode": "default"})
     wait_status(e, lambda st: st["sessions"] and st["sessions"][0].get("mode") == "default")
 
 
 def test_snapshot_marks_sessions_on_the_keypad(env):
     e = env(first_key)
-    e.hook("SessionStart", {"session_id": "aaaaaaaa-1", "cwd": "/w/one"})
-    e.hook("SessionStart", {"session_id": "bbbbbbbb-2", "cwd": "/w/two"})
-    e.a.store.update("kp-000001", lambda d: setattr(d, "projects", ["two"]))
+    for i in range(10):  # a keypad lists the latest 8
+        e.hook("SessionStart", {"session_id": f"aaaaaaa{i}-1", "cwd": f"/w/p{i}"})
+        time.sleep(0.01)
     snap = e.a.snapshot()
-    assert {x["project"]: x["on_keypad"] for x in snap["sessions"]} == {"one": False, "two": True}
-    assert snap["current"] == "bbbbbbbb-2"
-
-
-def test_project_filter(env):
-    e = env(press_label("Yes"))
-    e.a.store.update("kp-000001", lambda d: setattr(d, "projects", ["other"]))
-    assert e.hook("PermissionRequest", {"tool_name": "Bash"}) == {}
+    assert sum(x["on_keypad"] for x in snap["sessions"]) == 8
+    assert snap["current"] == "aaaaaaa9-1"
 
 
 def test_sessions_and_pinning(env):
@@ -241,9 +223,8 @@ def test_sessions_and_pinning(env):
     e.hook("SessionStart", {"session_id": "bbbbbbbb-2", "cwd": "/w/two"})
     assert e.a.sessions.current().project == "two"
     e.a.sessions.select("aaaaaaaa")
-    e.hook("PreToolUse", {"session_id": "bbbbbbbb-2", "cwd": "/w/two", "tool_name": "Read"})
+    e.hook("UserPromptSubmit", {"session_id": "bbbbbbbb-2", "cwd": "/w/two", "prompt": "go"})
     assert e.a.sessions.current().project == "one", "pin not honoured"
-    assert e.a.sessions.by_pid(42) is not None
 
 
 def test_redact():
@@ -269,23 +250,86 @@ def wait_status(e, pred, timeout=2.0):
     raise AssertionError(f"status never matched; last: {e.fake.status_snapshot()[-1:]}")
 
 
-def test_status_mirrors_transcript(env):
+def jl(**kw):
+    return json.dumps(kw) + "\n"
+
+
+def asst(*blocks):
+    return jl(type="assistant", message={"content": list(blocks)})
+
+
+def test_status_follows_the_transcript_live(env, tmp_path):
     e = env(first_key)
-    e.hook("SessionStart", {})
-    e.hook("UserPromptSubmit", {"prompt": "fix the tests", "session_title": "Fix tests"})
-    e.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "go test ./..."},
-                          "transcript_texts": [{"id": "a1", "text": "Running the tests first."}]})
-    e.hook("PostToolUseFailure", {"tool_name": "Bash", "error": "exit status 1\nlots of output"})
-    # the same message again (it stays in the transcript tail) must not repeat
-    e.hook("PostToolUse", {"tool_name": "Bash", "transcript_texts": [{"id": "a1", "text": "Running the tests first."}]})
-    # a message reaching the transcript only after its tool's PreToolUse still lands before that tool
-    e.hook("PreToolUse", {"tool_name": "Read", "tool_input": {"file_path": "/w/main_test.go"}})
-    e.hook("PostToolUse", {"tool_name": "Read", "transcript_texts": [
-        {"id": "a1", "text": "Running the tests first."}, {"id": "a2", "text": "Checking the test."}]})
-    want = [{"k": "u", "t": "fix the tests"}, {"k": "c", "t": "Running the tests first."},
+    tp = tmp_path / "t.jsonl"
+    tp.write_text("", encoding="utf-8")
+    e.hook("SessionStart", {"transcript_path": str(tp)})
+    e.hook("UserPromptSubmit", {"prompt": "fix the tests"})
+
+    def add(text):
+        with open(tp, "a", encoding="utf-8") as f:
+            f.write(text)
+
+    add(jl(type="ai-title", aiTitle="Fix tests") + jl(type="user", message={"content": "fix the tests"}))
+    add(asst({"type": "text", "text": "Running the tests **first**."},
+             {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "go test ./..."}}))
+    add(jl(type="user", message={"content": [{"type": "tool_result", "tool_use_id": "t1", "is_error": True,
+                                              "content": "exit status 1\nlots of output"}]}))
+    add(asst({"type": "text", "text": "Checking the test."}))
+    want = [{"k": "u", "t": "fix the tests"}, {"k": "c", "t": f"Running the tests {B}first{B}."},
             {"k": "t", "t": "Bash(go test ./...)"}, {"k": "r", "t": "Error: exit status 1"},
-            {"k": "c", "t": "Checking the test."}, {"k": "t", "t": "Read(main_test.go)"}]
+            {"k": "c", "t": "Checking the test."}]
     wait_status(e, lambda st: st.get("log") == want and st["sessions"][0].get("name") == "Fix tests")
+
+
+def one(st):
+    return (st["sessions"] or [{}])[0]
+
+
+def test_transcript_state_follows_tools_but_not_open_requests(env, tmp_path):
+    e = env(None)
+    tp = tmp_path / "t.jsonl"
+    tp.write_text("", encoding="utf-8")
+    e.hook("SessionStart", {"transcript_path": str(tp)})
+    with open(tp, "a", encoding="utf-8") as f:
+        f.write(asst({"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/w/main.go"}}))
+    wait_status(e, lambda st: one(st).get("state") == "tool" and one(st).get("detail") == "main.go")
+    with open(tp, "a", encoding="utf-8") as f:
+        f.write(jl(type="user", message={"content": "[Request interrupted by user]"}))
+    wait_status(e, lambda st: one(st).get("state") == "idle")
+    e.a.sessions.touch(SID, S.PERMISSION, "Permission", "Bash: ls")  # a request is waiting on someone
+    with open(tp, "a", encoding="utf-8") as f:
+        f.write(asst({"type": "tool_use", "id": "t2", "name": "Glob", "input": {"pattern": "*.go"}}))
+    wait_status(e, lambda st: one(st).get("state") == "permission" and (st.get("log") or [{}])[-1].get("t") == "Glob(*.go)")
+
+
+def test_pc_answering_first_closes_the_keypad_dialog(env, tmp_path):
+    e = env(None)  # the keypad never presses
+    tp = tmp_path / "t.jsonl"
+    tp.write_text(jl(type="user", message={"content": "go"}), encoding="utf-8")
+    e.hook("SessionStart", {"transcript_path": str(tp)})
+    result = []
+    t = threading.Thread(target=lambda: result.append(e.hook("PermissionRequest", {"tool_name": "Bash", "transcript_path": str(tp)})))
+    t.start()
+    deadline = time.time() + 3
+    while e.fake.last_screen() is None and time.time() < deadline:
+        time.sleep(0.01)
+    assert e.fake.last_screen() is not None and t.is_alive()
+    with open(tp, "a", encoding="utf-8") as f:  # you allowed it at the PC: Claude carries on
+        f.write(jl(type="user", message={"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}))
+    t.join(5)
+    assert not t.is_alive() and result == [{}], "the hook should end with no decision once the PC answered"
+
+
+def test_sessions_already_running_are_discovered(env, home):
+    e = env(first_key)
+    d = home / "claude" / "projects" / "-w-one"
+    d.mkdir(parents=True)
+    (d / "aaaaaaaa-1.jsonl").write_text(
+        jl(type="user", cwd="/w/one", message={"content": "fix it"}) + asst({"type": "text", "text": "On it."}), encoding="utf-8")
+    e.a.discover()
+    s = e.a.sessions.get("aaaaaaaa-1")
+    assert s and s.project == "one" and [x["t"] for x in s.log] == ["fix it", "On it."]
+    assert e.a.sessions.current().id == "aaaaaaaa-1"
 
 
 def test_status_trims_long_transcript(env):
@@ -313,24 +357,9 @@ def test_status_trims_long_transcript(env):
 def test_long_claude_message_kept_whole():
     s = S.Sessions()
     msg = "\n".join(f"Line {i} of a long answer." for i in range(150))  # ~4 KB
-    s.add_claude_texts("a", [{"id": "m1", "text": msg}], before_tool=False)
+    s.add_log("a", {"k": "c", "t": msg})
     assert s.get("a").log[-1]["t"] == msg
 
-
-def test_markdown_for_the_keypad():
-    from keypad.core.text import BOLD as B
-    from keypad.core.text import CODE as C
-    from keypad.core.text import markdown
-
-    md = ("## Summary\n\nAll **12 tests** pass in `pytest`; see [the docs](https://x.y/z).\n\n"
-          "* first\n  + nested\n1. one\n\n```python\nprint('hi')\n\nx = 1\n```\n\n"
-          "| a | b |\n|---|:-:|\n| 1 | 2 |\n\n---\n\n*emphasis* and snake_case_name and 2 * 3 * 4")
-    assert markdown(md).split("\n") == [
-        f"{B}Summary{B}", "", f"All {B}12 tests{B} pass in {C}pytest{C}; see the docs.", "",
-        "- first", "  - nested", "1. one", "", f"{C}print('hi'){C}", "", f"{C}x = 1{C}", "",
-        "| a | b |", "| 1 | 2 |", "", "emphasis and snake_case_name and 2 * 3 * 4"]
-    assert markdown("### **Bold** heading `x`") == f"{B}Bold heading {C}x{C}{B}"
-    assert markdown("a `b") == "a `b" and markdown("\x01raw\x02") == "raw"
 
 
 def test_new_session_survives_prune():
@@ -344,7 +373,7 @@ def test_new_session_survives_prune():
 
 def test_turn_timer():
     s = S.Sessions()
-    s.start("a", "/tmp/p", None)
+    s.start("a", "/tmp/p")
     s._m["a"].started = time.time() - 3600
     s.touch("a", S.THINKING, "Working", "")
     s.touch("a", S.PERMISSION, "Permission", "")  # still the same turn
@@ -368,19 +397,20 @@ def test_text_fits_keypad_buffers():
 def test_press_must_match_the_screen():
     from keypad.core.dialogs import press_matches
 
-    sel = {"tpl": "select", "esc": "pc", "items": [f"o{i}" for i in range(10)]}
+    sel = {"tpl": "select", "items": [f"o{i}" for i in range(10)]}  # a decision: no Esc
     assert press_matches(sel, {"key": 1, "act": "pick", "idx": 0}), "number key on its option"
     assert press_matches(sel, {"key": 3, "act": "pick", "idx": 2})
     assert press_matches(sel, {"key": 7, "act": "pick", "idx": 9}), "Enter on any option"
-    assert not press_matches(sel, {"key": 0, "act": "pick", "idx": 0}), "the encoder click never decides"
-    assert press_matches(sel, {"key": 5, "act": "pc"})
-    assert press_matches(sel, {"key": 0, "act": "pc"}), "the encoder click is Esc"
+    assert not press_matches(sel, {"key": 0, "act": "pick", "idx": 0}), "the keypad sends the knob press as Enter (7), never as key 0"
+    assert not press_matches(sel, {"key": 5, "act": "pc"}), "no way out of a decision"
+    done = {"tpl": "prompt", "esc": "done", "items": ["continue"]}
+    assert press_matches(done, {"key": 5, "act": "done"}) and not press_matches(done, {"key": 0, "act": "done"})
     assert not press_matches(sel, {"key": 2, "act": "pick", "idx": 0}), "number key on another option"
     assert not press_matches(sel, {"key": 4, "act": "pick", "idx": 3}), "4 is up, not a pick"
     assert not press_matches(sel, {"key": 7, "act": "pick", "idx": 10}), "no such option"
-    assert not press_matches(sel, {"key": 7, "act": "pc"}), "Esc is key 5"
+    assert not press_matches(done, {"key": 7, "act": "done"}), "done is Esc (key 5), not Enter"
     assert not press_matches(sel, {"key": 7, "act": "allow"}), "not an action the screen offers"
-    multi = {"tpl": "multi", "esc": "pc", "items": ["a", "b", "c"]}
+    multi = {"tpl": "multi", "items": ["a", "b", "c"]}
     assert press_matches(multi, {"key": 7, "act": "submit", "sel": [0, 2]})
     assert not press_matches(multi, {"key": 7, "act": "submit", "sel": [3]})
     assert not press_matches(multi, {"key": 7, "act": "submit", "sel": []})
@@ -398,7 +428,7 @@ def test_forged_press_is_not_a_decision(env):
 def test_permission_shows_the_whole_command(env):
     from keypad import hook
 
-    e = env(press_label("pc"))
+    e = env(first_key)
     cmd = "cat <<'EOF' > deploy.sh\n" + "\n".join(f"step {i} --flag value" for i in range(40)) + "\nEOF\nrm -rf /tmp/x"
     p = hook.slim({"session_id": SID, "cwd": "/w/p", "tool_name": "Bash", "tool_input": {"command": cmd}})
     e.hook("PermissionRequest", p)
@@ -428,7 +458,7 @@ def test_stop_not_asked_while_at_the_pc(env):
     e.a.presence = lambda: (120.0, True)  # away: asked
     assert e.hook("Stop", {})["decision"] == "block"
     cfg = config.Config()
-    cfg.behavior.stop_when_away = 0  # "Always"
+    cfg.behavior.ask_when_finished = 0  # "Always"
     e.a.set_config(cfg)
     e.a.presence = lambda: (1.0, True)
     assert e.hook("Stop", {})["decision"] == "block"
@@ -437,7 +467,7 @@ def test_stop_not_asked_while_at_the_pc(env):
 def test_edit_approval_shows_the_diff(env):
     from keypad import hook
 
-    e = env(press_label("pc"))
+    e = env(first_key)
     inp = {"file_path": "/w/app.py", "old_string": "x = 1\ny = 2\n", "new_string": "x = 1\ny = 3\n"}
     e.hook("PermissionRequest", hook.slim({"session_id": SID, "cwd": "/w/p", "tool_name": "Edit",
                                                                  "tool_input": inp}))
@@ -445,16 +475,34 @@ def test_edit_approval_shows_the_diff(env):
     assert s["diff"] is True and s["body"].split("\n") == ["/w/app.py", "  x = 1", "- y = 2", "+ y = 3"]
 
 
-def test_sessions_survive_an_agent_restart(env):
+def test_feed_added_describes_how_the_transcript_moved():
+    from keypad.core.agent import feed_added
+
+    a, b, c, d = ({"k": "c", "t": x} for x in "abcd")
+    assert feed_added([a, b], [a, b, c]) == (0, [c])
+    assert feed_added([a, b, c], [b, c, d]) == (1, [d])  # the oldest fell off the end of the log
+    assert feed_added([a, b], [c, d]) is None  # nothing in common: send it all
+    assert feed_added([], [a]) is None
+
+
+def test_keypad_gets_only_what_is_new(env):
     e = env(first_key)
-    e.hook("SessionStart", {"session_id": "aaaaaaaa-1", "cwd": "/w/one"})
-    e.hook("UserPromptSubmit", {"session_id": "aaaaaaaa-1", "cwd": "/w/one", "prompt": "fix it",
-                                "transcript_texts": [{"id": "m1", "text": "On it."}]})
-    e.a._save_sessions()
-    e2 = env(first_key)  # a new agent on the same data folder
-    s = e2.a.sessions.get("aaaaaaaa-1")
-    assert s and s.project == "one" and [x["t"] for x in s.log] == ["On it.", "fix it"]
-    assert e2.a.sessions.current().id == "aaaaaaaa-1"
-    # a message already shown is not repeated by the next hook
-    e2.hook("PostToolUse", {"session_id": "aaaaaaaa-1", "cwd": "/w/one", "transcript_texts": [{"id": "m1", "text": "On it."}]})
-    assert sum(x["t"] == "On it." for x in e2.a.sessions.get("aaaaaaaa-1").log) == 1
+    e.hook("SessionStart", {})
+    e.a.sessions.add_log(SID, {"k": "c", "t": "one"})
+    e.a.mark_dirty()
+    wait_status(e, lambda st: st.get("log") == [{"k": "c", "t": "one"}])
+    e.a.sessions.add_log(SID, {"k": "c", "t": "two"})
+    e.a.mark_dirty()
+    wait_status(e, lambda st: len(st.get("log") or []) == 2)
+    kinds = [("full" in m, m.get("add")) for m in e.fake.feeds]
+    assert kinds[0][0] and kinds[-1] == (False, [{"k": "c", "t": "two"}]), kinds
+
+
+def test_the_fake_keypad_flag_needs_the_development_switch(monkeypatch):
+    import pytest
+
+    from keypad import agent_cmd
+
+    monkeypatch.delenv("KEYPAD_DEV", raising=False)
+    with pytest.raises(SystemExit, match="KEYPAD_DEV=1"):
+        agent_cmd.start_agent("allow")

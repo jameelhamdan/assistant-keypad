@@ -1,26 +1,30 @@
-"""The private channel between the agent and its local clients (hook shim,
-MCP shim, tray, CLI): a Unix socket (mode 0600) or a Windows named pipe only
-the current user can open. Nothing listens on a TCP port.
+"""The private channel between the agent and its local clients (hook shim, tray,
+CLI): TCP on 127.0.0.1 with a random port and a secret token. The agent writes
+`agent.json` ({"port", "token"}) into the user's private data folder (mode 0600);
+a client reads it and sends the token with every request, so only a process that
+can read that file can talk to the agent. The same code serves macOS and Windows.
 
 Messages are a 4-byte big-endian length and a JSON object. Requests are
-{"m": method, "p": path, "b": body}; replies {"s": status, "b": body}.
-Standard library only: the hook shim imports this on every tool call."""
+{"m": method, "p": path, "b": body, "k": token}; replies {"s": status, "b": body}.
+Standard library only: the hook shim imports this on every prompt and decision."""
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
+import secrets
+import select
 import socket
 import struct
-import sys
 import threading
-import time
 from collections.abc import Callable
 from typing import Any
 
 from .dirs import data_dir
 
 MAX_MSG = 4 << 20
+HOST = "127.0.0.1"
 
 
 class AgentNotRunning(ConnectionError):
@@ -35,17 +39,19 @@ class Running(Exception):
     """Another agent already serves this user."""
 
 
-def _pipe_name() -> str:
-    user = os.environ.get("USERNAME", "user").replace("\\", "-").replace(" ", "-")
-    if home := os.environ.get("KEYPAD_HOME"):  # an isolated setup (tests, development) gets its own pipe
-        import hashlib
-
-        user += "-" + hashlib.sha1(home.encode()).hexdigest()[:8]
-    return rf"\\.\pipe\keypad-agent-{user}"
+def _info_path() -> str:
+    return os.path.join(data_dir(), "agent.json")
 
 
-def _sock_path() -> str:
-    return os.path.join(data_dir(), "agent.sock")
+def _read_info() -> dict[str, Any]:
+    try:
+        with open(_info_path(), encoding="utf-8") as f:
+            info = json.load(f)
+        if isinstance(info.get("port"), int) and isinstance(info.get("token"), str):
+            return info
+    except (OSError, ValueError, AttributeError):
+        pass
+    raise AgentNotRunning("no agent.json: the agent is not running")
 
 
 # ---- framing -------------------------------------------------------------------------
@@ -56,88 +62,88 @@ def _pack(obj: Any) -> bytes:
     return struct.pack(">I", len(b)) + b
 
 
-def _unpack_len(hdr: bytes) -> int:
-    (n,) = struct.unpack(">I", hdr)
+def _read(sock: socket.socket, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("connection closed")
+        buf += chunk
+    return bytes(buf)
+
+
+def _read_msg(sock: socket.socket) -> Any:
+    (n,) = struct.unpack(">I", _read(sock, 4))
     if n > MAX_MSG:
         raise ValueError("message too large")
-    return n
+    return json.loads(_read(sock, n))
 
 
 # ---- client ----------------------------------------------------------------------------
 
 
-class _Chan:
-    """One client connection (socket or pipe file)."""
-
-    def __init__(self, timeout: float | None):
-        if sys.platform == "win32":
-            deadline = time.monotonic() + 2
-            missing = 0
-            while True:
-                try:
-                    self._f = open(_pipe_name(), "r+b", buffering=0)  # noqa: SIM115
-                    break
-                except FileNotFoundError as e:
-                    # The agent has no free pipe instance for an instant after accepting a client.
-                    missing += 1
-                    if missing > 3:  # ~30 ms: really not running; hooks must fail fast
-                        raise AgentNotRunning(str(e)) from e
-                    time.sleep(0.01)
-                except OSError as e:  # ERROR_PIPE_BUSY: all instances in use
-                    if time.monotonic() > deadline:
-                        raise AgentNotRunning(str(e)) from e
-                    time.sleep(0.02)
-            self._s = None
-        else:
-            self._s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self._s.settimeout(timeout)
-            try:
-                self._s.connect(_sock_path())
-            except OSError as e:
-                self._s.close()
-                raise AgentNotRunning(str(e)) from e
-
-    def write(self, b: bytes) -> None:
-        if self._s is not None:
-            self._s.sendall(b)
-        else:
-            self._f.write(b)
-
-    def read(self, n: int) -> bytes:
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = self._s.recv(n - len(buf)) if self._s is not None else self._f.read(n - len(buf))
-            if not chunk:
-                raise ConnectionError("agent closed the connection")
-            buf += chunk
-        return bytes(buf)
-
-    def close(self) -> None:
-        (self._s or self._f).close()
+def _connect(timeout: float | None) -> tuple[socket.socket, str]:
+    info = _read_info()
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((HOST, info["port"]))
+    except OSError as e:  # a stale agent.json from a crashed agent
+        s.close()
+        raise AgentNotRunning(str(e)) from e
+    return s, info["token"]
 
 
 def request(method: str, path: str, body: Any = None, timeout: float | None = 30) -> Any:
     """Sends a request to the agent and returns the reply body. Raises
     AgentNotRunning or RequestError (the agent's error message)."""
-    ch = _Chan(timeout)
+    s, token = _connect(2 if timeout is None else min(timeout, 2))  # connecting is quick; waiting is not
     try:
-        ch.write(_pack({"m": method, "p": path, "b": body}))
-        resp = json.loads(ch.read(_unpack_len(ch.read(4))))
+        s.settimeout(timeout)
+        s.sendall(_pack({"m": method, "p": path, "b": body, "k": token}))
+        resp = _read_msg(s)
     except (OSError, ValueError) as e:
-        if isinstance(e, AgentNotRunning):
-            raise
         raise RequestError(str(e)) from e
     finally:
-        ch.close()
+        s.close()
     if resp.get("s", 500) >= 300:
         err = resp.get("b")
         raise RequestError(err.get("error", "request failed") if isinstance(err, dict) else "request failed")
     return resp.get("b")
 
 
+def stop_legacy() -> bool:
+    """Asks an agent of an older version (Keypad 2.x listened on a Windows named pipe or a
+    Unix socket instead of agent.json) to quit, so two generations never fight over the
+    keypad. True if one answered."""
+    try:
+        msg = _pack({"m": "POST", "p": "/quit", "b": None})
+        if os.name == "nt":
+            user = os.environ.get("USERNAME", "user").replace("\\", "-").replace(" ", "-")
+            if home := os.environ.get("KEYPAD_HOME"):
+                import hashlib
+
+                user += "-" + hashlib.sha1(home.encode()).hexdigest()[:8]
+            with open(rf"\\.\pipe\keypad-agent-{user}", "r+b", buffering=0) as f:
+                f.write(msg)
+                f.read(4)
+            return True
+        sock = os.path.join(data_dir(), "agent.sock")
+        if not os.path.exists(sock):
+            return False
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(2)
+        s.connect(sock)
+        s.sendall(msg)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def alive() -> bool:
     try:
-        _Chan(0.5).close()
+        _connect(0.5)[0].close()
         return True
     except AgentNotRunning:
         return False
@@ -150,161 +156,64 @@ Handler = Callable[[str, str, Any, Callable[[], bool]], tuple[int, Any]]
 # True when the client hung up (e.g. Claude Code cancelled the hook).
 
 
+def _write_info(port: int, token: str) -> None:
+    p = _info_path()
+    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+    tmp = p + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, json.dumps({"port": port, "token": token}).encode())
+    finally:
+        os.close(fd)
+    os.replace(tmp, p)
+
+
+def _serve_conn(c: socket.socket, token: str, handler: Handler) -> None:
+    def gone() -> bool:
+        try:
+            r, _, _ = select.select([c], [], [], 0)
+            return bool(r) and c.recv(1, socket.MSG_PEEK) == b""
+        except OSError:
+            return True
+
+    try:
+        c.settimeout(10)  # a client has this long to send its request
+        req = _read_msg(c)
+        c.settimeout(None)
+        if not isinstance(req, dict) or not hmac.compare_digest(str(req.get("k", "")), token):
+            status, body = 403, {"error": "forbidden"}
+        else:
+            status, body = handler(str(req.get("m", "")), str(req.get("p", "")), req.get("b"), gone)
+        c.sendall(_pack({"s": status, "b": body}))
+    except (OSError, ValueError, ConnectionError):
+        pass
+    finally:
+        c.close()
+
+
 def serve(handler: Handler, stop: threading.Event) -> None:
     """Serves requests until stop is set. Raises Running if another agent serves this user."""
     if alive():
         raise Running()
-    if sys.platform == "win32":
-        _serve_pipe(handler, stop)
-    else:
-        _serve_unix(handler, stop)
-
-
-def _handle(handler: Handler, read: Callable[[int], bytes], write: Callable[[bytes], None],
-            gone: Callable[[], bool]) -> None:
-    try:
-        req = json.loads(read(_unpack_len(read(4))))
-        status, body = handler(str(req.get("m", "")), str(req.get("p", "")), req.get("b"), gone)
-    except (OSError, ValueError, ConnectionError):
-        return
-    try:
-        write(_pack({"s": status, "b": body}))
-    except OSError:
-        pass
-
-
-def _serve_unix(handler: Handler, stop: threading.Event) -> None:
-    import select
-
-    p = _sock_path()
-    os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
-    try:
-        os.unlink(p)  # stale socket from a crashed agent
-    except FileNotFoundError:
-        pass
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    old = os.umask(0o177)  # the socket is created 0600: this user only
-    try:
-        srv.bind(p)
-    finally:
-        os.umask(old)
-    os.chmod(p, 0o600)
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind((HOST, 0))
     srv.listen(64)
     srv.settimeout(0.5)
-
-    def conn_thread(c: socket.socket) -> None:
-        def read(n: int) -> bytes:
-            buf = bytearray()
-            while len(buf) < n:
-                chunk = c.recv(n - len(buf))
-                if not chunk:
-                    raise ConnectionError("client closed")
-                buf += chunk
-            return bytes(buf)
-
-        def gone() -> bool:
-            try:
-                r, _, _ = select.select([c], [], [], 0)
-                return bool(r) and c.recv(1, socket.MSG_PEEK) == b""
-            except OSError:
-                return True
-
-        try:
-            c.settimeout(None)
-            _handle(handler, read, c.sendall, gone)
-        finally:
-            c.close()
-
+    token = secrets.token_hex(32)
+    _write_info(srv.getsockname()[1], token)
     try:
         while not stop.is_set():
             try:
                 c, _ = srv.accept()
             except TimeoutError:
                 continue
-            threading.Thread(target=conn_thread, args=(c,), daemon=True).start()
+            threading.Thread(target=_serve_conn, args=(c, token, handler), daemon=True).start()
     finally:
         srv.close()
         try:
-            os.unlink(p)
-        except OSError:
+            with open(_info_path(), encoding="utf-8") as f:
+                mine = json.load(f).get("token") == token
+            if mine:
+                os.unlink(_info_path())
+        except (OSError, ValueError):
             pass
-
-
-def _serve_pipe(handler: Handler, stop: threading.Event) -> None:
-    import ctypes
-    from ctypes import wintypes
-
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    adv = ctypes.WinDLL("advapi32", use_last_error=True)
-
-    class SECURITY_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p), ("bInheritHandle", wintypes.BOOL)]
-
-    k32.CreateNamedPipeW.restype = wintypes.HANDLE
-    k32.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-                                     wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
-    k32.ConnectNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-    k32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
-    k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
-    k32.PeekNamedPipe.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
-                                  ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
-    k32.DisconnectNamedPipe.argtypes = [wintypes.HANDLE]
-    k32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
-    k32.CloseHandle.argtypes = [wintypes.HANDLE]
-
-    # Only the pipe's owner (this user) and SYSTEM may open it.
-    sd = ctypes.c_void_p()
-    if not adv.ConvertStringSecurityDescriptorToSecurityDescriptorW("D:P(A;;GA;;;OW)(A;;GA;;;SY)", 1, ctypes.byref(sd), None):
-        raise OSError(ctypes.get_last_error(), "security descriptor")
-    sa = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), sd, False)
-
-    PIPE_ACCESS_DUPLEX, FIRST_INSTANCE = 0x3, 0x00080000
-    PIPE_REJECT_REMOTE = 0x8
-    INVALID = wintypes.HANDLE(-1).value
-    ERROR_PIPE_CONNECTED, ERROR_BROKEN_PIPE = 535, 109
-    first = True
-
-    def conn_thread(h) -> None:
-        def read(n: int) -> bytes:
-            buf = ctypes.create_string_buffer(n)
-            got = wintypes.DWORD()
-            out = bytearray()
-            while len(out) < n:
-                if not k32.ReadFile(h, buf, n - len(out), ctypes.byref(got), None) or got.value == 0:
-                    raise ConnectionError("client closed")
-                out += buf.raw[: got.value]
-            return bytes(out)
-
-        def write(b: bytes) -> None:
-            done = wintypes.DWORD()
-            if not k32.WriteFile(h, b, len(b), ctypes.byref(done), None):
-                raise OSError(ctypes.get_last_error(), "write")
-
-        def gone() -> bool:
-            avail = wintypes.DWORD()
-            if k32.PeekNamedPipe(h, None, 0, None, ctypes.byref(avail), None):
-                return False
-            return ctypes.get_last_error() == ERROR_BROKEN_PIPE
-
-        try:
-            _handle(handler, read, write, gone)
-        finally:
-            # Disconnecting discards what the client has not read yet (its read then fails
-            # with EINVAL, at random): wait until it has taken the whole reply.
-            k32.FlushFileBuffers(h)
-            k32.DisconnectNamedPipe(h)
-            k32.CloseHandle(h)
-
-    while not stop.is_set():
-        mode = PIPE_ACCESS_DUPLEX | (FIRST_INSTANCE if first else 0)
-        h = k32.CreateNamedPipeW(_pipe_name(), mode, PIPE_REJECT_REMOTE, 255, 65536, 65536, 0, ctypes.byref(sa))
-        if h == INVALID:
-            if first:
-                raise Running()
-            time.sleep(0.1)
-            continue
-        first = False
-        if not k32.ConnectNamedPipe(h, None) and ctypes.get_last_error() != ERROR_PIPE_CONNECTED:
-            k32.CloseHandle(h)
-            continue
-        threading.Thread(target=conn_thread, args=(h,), daemon=True).start()

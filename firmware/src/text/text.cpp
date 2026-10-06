@@ -2,8 +2,6 @@
 
 #include <string.h>
 
-#include "arabic.h"
-
 namespace {
 
 // Decode one code point at p; returns bytes consumed (>= 1).
@@ -36,12 +34,17 @@ const char *replacement(uint32_t cp) {
 }
 
 bool keep(uint32_t cp) {
-    return (cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp <= 0xFF) || cp == '\n' || cp == 0x01 || cp == 0x02 ||
-           (cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0xFB50 && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF) ||
-           cp == 0x200C || cp == 0x200D;
+    return (cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp <= 0xFF) || cp == '\n' || (cp >= 0x01 && cp <= 0x03) ||
+           false;
 }
 
 }  // namespace
+
+uint16_t utf8Length(const char *s) {
+    uint16_t n = 0;
+    for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) n++;
+    return n;
+}
 
 void textSanitize(char *s) {
     // Output never grows beyond input except "..." (3 bytes) replacing a 3-byte
@@ -51,8 +54,8 @@ void textSanitize(char *s) {
     while (*r) {
         uint32_t cp;
         uint8_t n = decode(r, cp);
-        // \x01 and \x02 are the transcript's style markers (bold, code): kept
-        const char *rep = (cp < 0x20 && cp != '\n' && cp != 0x01 && cp != 0x02) ? " " : replacement(cp);
+        // \x01..\x03 are the transcript's style markers (bold, code, dim): kept
+        const char *rep = (cp < 0x20 && cp != '\n' && !(cp >= 0x01 && cp <= 0x03)) ? " " : replacement(cp);
         if (rep) {
             size_t k = strlen(rep);
             memmove(w, rep, k);

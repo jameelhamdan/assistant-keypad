@@ -6,5 +6,4 @@
 extern "C" {
 extern const uint8_t u8g2_font_spleen8x16_mf[];
 extern const uint8_t u8g2_font_spleen6x12_mf[];
-extern const uint8_t u8g2_font_unifont_t_arabic[];
 }

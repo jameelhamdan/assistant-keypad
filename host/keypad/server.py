@@ -1,5 +1,5 @@
 """The agent's API over the private IPC channel (see ipc.py), used by the hook
-and MCP shims, the tray and the CLI."""
+shim, the tray and the CLI."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from typing import Any
 from . import claudecfg, config, firmware, proto
 from .core.agent import Agent
 from .core.ctx import Ctx
-from .core.hooks import Question
 
 
 class Fail(Exception):
@@ -25,10 +24,10 @@ class Server:
         self.a, self.bin, self.log, self.quit = agent, binary, log, quit_
         self._ota_lock = threading.Lock()
         self._ota: dict[str, int] = {}
+        self._pair_page = None
         self._routes: list[tuple[str, re.Pattern, Callable]] = []
         r = self._route
         r("POST", "/hook", self.hook)
-        r("POST", "/ask", self.ask)
         r("GET", "/status", lambda b, **_: self.a.snapshot())
         r("POST", "/pause", lambda b, **_: (self.a.set_paused(bool(b.get("paused"))), ok())[1])
         r("POST", "/quit", self.do_quit)
@@ -38,6 +37,7 @@ class Server:
         r("PUT", "/config", self.put_config)
         r("PATCH", "/devices/(?P<id>[^/]+)", self.patch_device)
         r("POST", "/pairing", lambda b, **_: (self.hub.open_pairing(), ok())[1])
+        r("GET", "/pair-url", self.pair_url)
         r("POST", "/devices/(?P<id>[^/]+)/provision", self.provision)
         r("POST", "/devices/(?P<id>[^/]+)/unpair", lambda b, id, **_: (self.hub.unpair(id), ok())[1])
         r("POST", "/devices/(?P<id>[^/]+)/identify", self.identify)
@@ -68,16 +68,8 @@ class Server:
 
     def hook(self, b: dict, gone: Callable[[], bool], **_) -> dict:
         ctx = Ctx(cancelled=gone)  # the hook shim hung up: Claude Code moved on
-        pids = [int(p) for p in b.get("pids") or [] if isinstance(p, int)]
         payload = b.get("payload") if isinstance(b.get("payload"), dict) else {}
-        return self.a.hook(ctx, str(b.get("event", "")), payload, pids)
-
-    def ask(self, b: dict, gone: Callable[[], bool], **_) -> list:
-        qs = [Question.from_dict(q) for q in b.get("questions") or [] if isinstance(q, dict)]
-        out = []
-        for a in self.a.ask(Ctx(cancelled=gone), int(b.get("pid") or 0), str(b.get("cwd", "")), qs):
-            out.append({"values": a.values, "yes": a.yes, "error": str(a.err) if a.err else ""})
-        return out
+        return self.a.hook(ctx, str(b.get("event", "")), payload)
 
     # ---- control ----
 
@@ -126,17 +118,22 @@ class Server:
         def upd(d: config.Device) -> None:
             if isinstance(b.get("name"), str) and b["name"].strip():
                 d.name = proto.fit(b["name"].strip(), proto.DEVICE_NAME)
-            if b.get("theme") in ("dark", "light", "system"):
-                d.theme = b["theme"]
             if isinstance(b.get("brightness"), int):
                 d.brightness = max(5, min(100, b["brightness"]))
-            if isinstance(b.get("projects"), list):
-                d.projects = [str(p).strip() for p in b["projects"] if str(p).strip()]
 
         self.a.store.update(id, upd)
         self.hub.send_settings(id)
         self.a.mark_dirty()  # the project filter may have changed
         return ok()
+
+    def pair_url(self, b: dict, **_) -> dict:
+        """The address of the local pairing page (also opens the USB port for a while)."""
+        from .pairpage import PairPage
+
+        self.hub.open_pairing()
+        if self._pair_page is None:
+            self._pair_page = PairPage(self.a, self.hub)
+        return {"url": self._pair_page.url()}
 
     def provision(self, b: dict, id: str, **_) -> dict:
         ssid = str(b.get("ssid", "")).strip()

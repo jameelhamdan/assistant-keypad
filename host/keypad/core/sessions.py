@@ -5,21 +5,20 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Any
 
 from .. import proto
-from .text import clip, markdown, project_of
+from .markdown import device_text, render
+from .text import clip, project_of
 
 IDLE, THINKING, WORKING, TOOL = "idle", "thinking", "working", "tool"
 PERMISSION, QUESTION, INPUT = "permission", "question", "input"
 DONE, STOPPED, CONTINUING, FAILED, ENDED = "done", "stopped", "continuing", "failed", "ended"
 
-# This state taxonomy is duplicated by hand in two other places that must
-# stay in sync: host/keypad/tray.py (state_word/_color_for) and
-# firmware/src/ui.cpp (busy()/waiting()/stateColor()/stateWord()). A new
-# state added here needs updating in both.
+# These states are also spelled out in host/keypad/tray.py (state_word) and
+# firmware/src/ui.cpp (busy, waiting, stateWord); tests/test_states.py fails
+# when the three drift apart.
 BUSY_STATES = {THINKING, WORKING, TOOL, PERMISSION, QUESTION, INPUT, CONTINUING}
 WAITING_STATES = {PERMISSION, QUESTION, STOPPED, INPUT}
 WORKING_STATES = {THINKING, WORKING, TOOL, CONTINUING}
@@ -28,7 +27,7 @@ STALE_AFTER = 6 * 3600
 # transcript line kinds
 LOG_USER, LOG_CLAUDE, LOG_TOOL, LOG_RESULT = "u", "c", "t", "r"
 LOG_MAX = 32  # the keypad scrolls back through these (firmware MAX_LOG)
-MAX_SESSIONS = 32
+MAX_SESSIONS = 8  # what a keypad lists
 
 
 @dataclass
@@ -36,7 +35,7 @@ class Session:
     id: str
     project: str = ""
     cwd: str = ""
-    pids: list[int] = field(default_factory=list)  # claude process ancestry reported by the hook shim
+    transcript: str = ""  # path of the session's transcript file (the live feed follows it)
     state: str = IDLE
     title: str = ""
     detail: str = ""
@@ -47,19 +46,17 @@ class Session:
     name: str = ""  # the session's title, as on its terminal tab
     mode: str = ""  # Claude Code's permission mode (default, acceptEdits, plan, auto, dontAsk, bypassPermissions; "" = not seen yet)
     log: list[dict[str, str]] = field(default_factory=list)  # latest transcript lines, oldest first
-    seen: set[str] = field(default_factory=set, repr=False)  # transcript message ids already in log
-    inflight: int = field(default=0, repr=False)  # tool calls (main + subagents) currently running
 
     def view(self) -> dict[str, Any]:
-        return {k: copy.copy(v) for k, v in self.__dict__.items() if k != "seen"}
+        return {k: copy.copy(v) for k, v in self.__dict__.items()}
 
 
 def fit_log(kind: str, text: str) -> str:
     """A transcript entry as the keypad stores it: Claude's text whole (up to
     8 KB) with its Markdown styled, your prompt up to 2 KB, tool lines short."""
     if kind == LOG_CLAUDE:
-        return proto.fit(markdown(text), proto.LOG_CLAUDE_TEXT)
-    return proto.fit(text, proto.LOG_USER_TEXT if kind == LOG_USER else proto.LOG_TEXT)
+        return render(text, max_bytes=proto.LOG_CLAUDE_TEXT)
+    return proto.fit(device_text(text), proto.LOG_USER_TEXT if kind == LOG_USER else proto.LOG_TEXT)
 
 
 def short(sid: str) -> str:
@@ -89,16 +86,14 @@ class Sessions:
         if cands:
             del self._m[min(cands, key=lambda x: x.last).id]
 
-    def touch(self, sid: str, state: str, title: str, detail: str, cwd: str = "", pids: list[int] | None = None) -> None:
+    def touch(self, sid: str, state: str, title: str, detail: str, cwd: str = "") -> None:
         """Records an event. It becomes the current session unless another is pinned."""
         with self._lock:
             x = self._get(sid)
             if cwd:
                 x.cwd, x.project = cwd, project_of(cwd)
-            if pids:
-                x.pids = list(pids)
             if x.state not in BUSY_STATES and state in BUSY_STATES:
-                x.turn = time.time()  # a new turn: restart the "Brewing… (12s)" timer
+                x.turn = time.time()  # a new turn: restart the "Working… (12s)" timer
             x.state, x.title, x.detail, x.last = state, title, detail, time.time()
             if state == ENDED:
                 if self._pinned == sid:
@@ -109,38 +104,17 @@ class Sessions:
             if not self._pinned or self._pinned == sid:
                 self._current = sid
 
-    def enter_tool(self, sid: str) -> None:
-        """A tool call (main session or a subagent) started running."""
-        with self._lock:
-            self._get(sid).inflight += 1
-
-    def exit_tool(self, sid: str) -> int:
-        """A tool call finished; returns how many are still running for sid.
-        Concurrent subagents share one session's displayed state, so a quick
-        call finishing must not blank out the state of another still running
-        -- the caller checks this before overwriting it with a generic one."""
-        with self._lock:
-            x = self._get(sid)
-            x.inflight = max(0, x.inflight - 1)
-            return x.inflight
-
-    def start(self, sid: str, cwd: str, pids: list[int] | None) -> None:
+    def start(self, sid: str, cwd: str) -> None:
         """Registers a (re)started session and resets its counters."""
         with self._lock:
             x = self._get(sid)
             x.continues, x.started = 0, time.time()
-        self.touch(sid, IDLE, "Ready", "", cwd, pids)
+        self.touch(sid, IDLE, "Ready", "", cwd)
 
     def get(self, sid: str) -> Session | None:
         with self._lock:
             x = self._m.get(sid)
             return copy.deepcopy(x) if x else None
-
-    def by_pid(self, pid: int) -> Session | None:
-        """The live session whose claude process is pid (the MCP server's parent)."""
-        with self._lock:
-            c = [x for x in self._m.values() if pid > 0 and pid in x.pids and x.state != ENDED]
-            return copy.deepcopy(max(c, key=lambda x: x.last)) if c else None
 
     def project(self, sid: str) -> str:
         x = self.get(sid)
@@ -213,57 +187,18 @@ class Sessions:
                     x.log.append(line)
             del x.log[:-LOG_MAX]
 
-    def add_claude_texts(self, sid: str, texts: list[dict[str, str]], before_tool: bool) -> None:
-        """Logs Claude's transcript messages not logged before. before_tool
-        places them ahead of the latest tool line: Claude Code writes a
-        message to the transcript only after the PreToolUse hook of the tool
-        call it introduces, so it reaches us with that tool's PostToolUse."""
-        with self._lock:
-            x = self._get(sid)
-            lines = []
-            for t in texts:
-                key = t["id"] + "\0" + t["text"]
-                if key not in x.seen:
-                    x.seen.add(key)
-                    lines.append({"k": LOG_CLAUDE, "t": fit_log(LOG_CLAUDE, t["text"])})
-            if len(x.seen) > 64:  # only recent ids matter
-                x.seen = {t["id"] + "\0" + t["text"] for t in texts}
-            at = -1
-            if before_tool and lines:
-                for i in range(len(x.log) - 1, -1, -1):
-                    if x.log[i]["k"] == LOG_TOOL:
-                        at = i
-                        break
-                    if x.log[i]["k"] != LOG_RESULT:
-                        break  # the latest tool already has text after it: append
-            if at >= 0:
-                x.log[at:at] = lines
-                del x.log[:-LOG_MAX]
-                return
-        self.add_log(sid, *lines)
+    def set_transcript(self, sid: str, path: str) -> None:
+        if path:
+            with self._lock:
+                self._get(sid).transcript = path
 
-    # ---- kept across agent restarts ----
-
-    def dump(self) -> list[dict[str, Any]]:
-        with self._lock:
-            return [{**{k: copy.copy(v) for k, v in x.__dict__.items() if k != "seen"}, "seen": sorted(x.seen)}
-                    for x in self._m.values() if x.state != ENDED]
-
-    def restore(self, saved: list[Any]) -> None:
-        """Sessions from dump(), minus stale ones; the display follows the latest."""
-        now = time.time()
-        names = {f.name for f in fields(Session)}
-        with self._lock:
-            for d in saved if isinstance(saved, list) else []:
-                if not isinstance(d, dict) or not isinstance(d.get("id"), str) or now - float(d.get("last", 0)) > STALE_AFTER:
-                    continue
-                try:
-                    x = Session(**{k: v for k, v in d.items() if k in names and k != "seen"})
-                except TypeError:
-                    continue
-                x.seen = {str(k) for k in d.get("seen") or []}
-                self._m[x.id] = x
-            self._current = self._latest()
+    def set_cwd(self, sid: str, cwd: str) -> None:
+        """The working directory, when a session was found before any hook told us."""
+        if cwd:
+            with self._lock:
+                x = self._get(sid)
+                if not x.cwd:
+                    x.cwd, x.project = cwd, project_of(cwd)
 
     def set_name(self, sid: str, name: str) -> None:
         if name:
@@ -275,13 +210,11 @@ class Sessions:
             self._get(sid).mode = mode
 
 
-def wire(sessions: list[Session], allow: Callable[[str], bool] | None = None) -> list[dict[str, Any]]:
-    """Live sessions for the status message, filtered by project."""
+def wire(sessions: list[Session]) -> list[dict[str, Any]]:
+    """Live sessions for the status message (the latest 8)."""
     out = []
     now = time.time()
     for x in sessions:
-        if allow and not allow(x.project):
-            continue
         d = {"id": short(x.id), "project": proto.fit(x.project, proto.SESSION_PROJECT), "state": x.state,
              "title": proto.fit(clip(x.title, 40), proto.SESSION_TITLE), "since": int(now - (x.turn or x.started))}
         if x.detail:

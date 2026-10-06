@@ -23,13 +23,14 @@ struct SessionInfo {
 // One entry of the mirrored transcript, drawn like the terminal:
 // 'u' > prompt   'c' ⏺ Claude's text   't' ⏺ Tool(args)   'r' ⎿ result
 // Its text is NUL-terminated in StatusModel::logText. Claude's text may carry
-// style markers: \x01 toggles bold (headings, **bold**), \x02 toggles code.
+// style markers: \x01 toggles bold (headings, **bold**), \x02 toggles code, \x03 toggles dim (italics, quotes).
 struct LogEntry {
     char k;
     uint16_t off;
 };
 
-constexpr char MARK_BOLD = '\x01', MARK_CODE = '\x02';
+constexpr char MARK_BOLD = '\x01', MARK_CODE = '\x02', MARK_DIM = '\x03';
+inline bool isMark(char c) { return c >= MARK_BOLD && c <= MARK_DIM; }
 
 struct StatusModel {
     uint8_t n;
@@ -73,11 +74,10 @@ struct ScreenModel {
     int16_t maxScroll;    // set by the renderer
 };
 
-enum class Mode : uint8_t { Boot, Waiting, Status, Sessions, Screen, Test, Ota };
+enum class Mode : uint8_t { Boot, Waiting, Status, Sessions, Screen, Ota };
 
 struct Model {
     Mode mode;
-    bool dark;
     uint8_t brightness;
     bool dimmed;              // idle: backlight down; the next key only wakes it, a request wakes it fully
     uint32_t lastActivity;    // millis() of the last key, request or toast
@@ -86,12 +86,13 @@ struct Model {
     char host[32];            // host name from hello_ack
     bool paired;
 
-    bool usbHost, wifiHost;   // which links currently have a live host
+    bool wifiHost;            // the host on Wi-Fi has said hello and is alive
     WifiState wifi;
     char ssid[33];
     char ip[16];
     int rssi;
     int8_t battery;           // percent, -1 unknown / on USB power
+    bool usbPower;            // running from a wire: the screen never dims
 
     StatusModel status;
     int8_t view;              // index into status.s shown on the status screen
@@ -106,8 +107,6 @@ struct Model {
     Tone toastTone;
     uint32_t toastUntil;
 
-    uint16_t testKeys;        // bit n = key n held (test mode)
-    int32_t testEncoder;
     int8_t otaPct;
 };
 

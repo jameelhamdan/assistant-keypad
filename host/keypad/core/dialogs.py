@@ -6,15 +6,12 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
 from .. import proto
 from .ctx import Ctx
 
-HANDBACK_GRACE = 2.0
-RESEND_AFTER = 1.5
 TICK = 0.25
 
 
@@ -33,8 +30,8 @@ class Timeout(DialogError):
 
 
 class ToPC(DialogError):
-    def __init__(self) -> None:
-        super().__init__("handed back to the PC")
+    def __init__(self, why: str = "handed back to the PC") -> None:
+        super().__init__(why)
 
 
 def press_matches(screen: dict[str, Any], press: dict[str, Any]) -> bool:
@@ -58,31 +55,29 @@ def press_matches(screen: dict[str, Any], press: dict[str, Any]) -> bool:
 
 
 class Display(Protocol):
-    def targets(self, project: str) -> list[str]: ...
+    def targets(self) -> list[str]: ...
     def send_to(self, dev_id: str, msg: dict[str, Any]) -> None: ...
 
 
 class Dialog:
     """One interactive request; it may show several screens."""
 
-    def __init__(self, m: Dialogs, did: str, project: str, handback: bool, sid: str = ""):
-        self.m, self.id, self.project, self.handback = m, did, project, handback
+    def __init__(self, m: Dialogs, did: str, project: str, sid: str = ""):
+        self.m, self.id, self.project = m, did, project
         self.sid = sid  # the Claude Code session asking: the keypads show it meanwhile
         self.turn = threading.Event()
         self.press: queue.Queue[tuple[dict[str, Any], str]] = queue.Queue(maxsize=4)
         self._lock = threading.Lock()
         self.screen: dict[str, Any] | None = None
         self.targets: list[str] = []
-        self.acked: set[str] = set()
-        self.activated = 0.0
-        self.idle_ok = False
+        self.cancelled = ""  # set when the PC answered first: why the screen goes away
         self.n = 0
 
     def show(self, ctx: Ctx, screen: dict[str, Any]) -> dict[str, Any]:
         """Displays a screen and waits for a press, which is returned.
         "pc" (hand to PC), timeouts and disconnects raise DialogError."""
         m = self.m
-        targets = m.disp.targets(self.project)
+        targets = m.disp.targets()
         if not targets:
             raise NoKeypad()
         with self._lock:
@@ -90,13 +85,12 @@ class Dialog:
             s = proto.fit_screen(dict(screen, t="screen", id=f"{self.id}-{self.n}"))
             if (rem := ctx.remaining()) is not None:
                 s["timeout"] = max(1, int(rem))
-            self.screen, self.targets, self.acked = s, list(targets), set()
+            self.screen, self.targets = s, list(targets)
         while not self.press.empty():  # presses for an earlier screen
             self.press.get_nowait()
         for dev in targets:
             m.disp.send_to(dev, s)
 
-        resend_at = time.monotonic() + RESEND_AFTER
         while True:
             wait = TICK if (rem := ctx.remaining()) is None else max(0.0, min(TICK, rem))
             try:
@@ -104,27 +98,20 @@ class Dialog:
             except queue.Empty:
                 pass
             else:
-                if press.get("act") == "pc":
+                if press.get("act") in ("pc", "done"):  # "done" on the finished screen: stop there
                     self.close_screen("pc", dev)
                     raise ToPC()
                 self.close_screen("answered", dev)
                 return press
+            if self.cancelled:
+                self.close_screen("pc", "")
+                raise ToPC(self.cancelled)
             if ctx.done():
                 self.close_screen("timeout", "")
                 raise Timeout()
-            if resend_at and time.monotonic() >= resend_at:  # re-sent once to keypads that didn't ack
-                resend_at = 0.0
-                with self._lock:
-                    late = [d for d in self.targets if d not in self.acked]
-                for dev in late:
-                    m.disp.send_to(dev, s)
-            if not m.disp.targets(self.project):
+            if not m.disp.targets():
                 self.close_screen("disconnected", "")
                 raise NoKeypad()
-            if self.should_hand_back():
-                m.log.info("PC activity - handing the request back to the computer (screen %s)", s["id"])
-                self.close_screen("pc", "")
-                raise ToPC()
 
     def close_screen(self, why: str, except_dev: str) -> None:
         """Tells keypads (except the one that answered, which already locked
@@ -139,25 +126,10 @@ class Dialog:
             if dev != except_dev or why == "done":
                 self.m.disp.send_to(dev, {"t": "close", "id": sid, "why": why})
 
-    def should_hand_back(self) -> bool:
-        m = self.m
-        if not self.handback or m.idle is None or not self.idle_ok:
-            return False
-        hb = m.handback()
-        if not hb.enabled:
-            return False
-        idle, ok = m.idle()
-        if not ok:
-            return False
-        # Input that began after the request appeared (with a grace period, so
-        # typing that was already under way doesn't count) means "I'm at the PC".
-        return idle + HANDBACK_GRACE < time.monotonic() - self.activated
-
 
 class Dialogs:
-    def __init__(self, disp: Display, idle: Callable[[], tuple[float, bool]] | None, handback: Callable[[], Any],
-                 log: logging.Logger):
-        self.disp, self.idle, self.handback, self.log = disp, idle, handback, log
+    def __init__(self, disp: Display, log: logging.Logger):
+        self.disp, self.log = disp, log
         self.on_change: Callable[[], None] = lambda: None
         self._lock = threading.Lock()
         self._queue: list[Dialog] = []
@@ -178,14 +150,24 @@ class Dialogs:
         with self._lock:
             return self._active.sid if self._active else ""
 
-    def run(self, ctx: Ctx, project: str, kind: str, handback: bool, fn: Callable[[Dialog], Any], sid: str = "") -> Any:
+    def cancel(self, sid: str, why: str) -> bool:
+        """The PC answered first (Claude moved on while sid's dialog was open):
+        the dialog ends and its hook returns "no decision"."""
+        with self._lock:
+            d = self._active
+        if d is None or not sid or d.sid != sid:
+            return False
+        d.cancelled = why
+        return True
+
+    def run(self, ctx: Ctx, project: str, kind: str, fn: Callable[[Dialog], Any], sid: str = "") -> Any:
         """Waits for the keypads, then runs fn(dialog) and returns its result.
         DialogError means "let Claude Code use its own UI"."""
-        if not self.disp.targets(project):
+        if not self.disp.targets():
             raise NoKeypad()
         with self._lock:
             self._seq += 1
-            d = Dialog(self, f"{kind[0]}{self._seq}", project, handback, sid)
+            d = Dialog(self, f"{kind[0]}{self._seq}", project, sid)
             self._queue.append(d)
             self._promote()
         self.on_change()
@@ -206,9 +188,6 @@ class Dialogs:
             return
         d = self._queue.pop(0)
         self._active = d
-        d.activated = time.monotonic()
-        if self.idle is not None:
-            _, d.idle_ok = self.idle()
         d.turn.set()
 
     def _finish(self, d: Dialog) -> None:
@@ -241,22 +220,13 @@ class Dialogs:
                 pass
         return ok
 
-    def ack(self, dev: str, sid: str) -> None:
-        with self._lock:
-            d = self._active
-        if d is None:
-            return
-        with d._lock:
-            if d.screen is not None and d.screen["id"] == sid:
-                d.acked.add(dev)
-
     def reshow(self, dev: str) -> bool:
         """Sends the active screen to a keypad that just (re)connected."""
         with self._lock:
             d = self._active
         if d is None:
             return False
-        if dev not in self.disp.targets(d.project):
+        if dev not in self.disp.targets():
             return False
         with d._lock:
             if d.screen is None:

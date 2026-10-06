@@ -2,7 +2,6 @@
 #include <string.h>
 #include <unity.h>
 
-#include "text/arabic.h"
 #include "text/text.h"
 
 void setUp(void) {}
@@ -53,36 +52,20 @@ void test_sanitize(void) {
     strcpy(s, "It\xE2\x80\x99s \xE2\x80\x9Cok\xE2\x80\x9D \xE2\x80\x94 wait\xE2\x80\xA6 \xF0\x9F\x98\x80");
     textSanitize(s);
     TEST_ASSERT_EQUAL_STRING("It's \"ok\" - wait... ?", s);
-    strcpy(s, "caf\xC3\xA9 \xD9\x86\xD8\xB9\xD9\x85\ttab");
+    strcpy(s, "caf\xC3\xA9 \xD9\x86\ttab");
     textSanitize(s);
-    TEST_ASSERT_EQUAL_STRING("caf\xC3\xA9 \xD9\x86\xD8\xB9\xD9\x85 tab", s);
+    TEST_ASSERT_EQUAL_STRING("caf\xC3\xA9 ? tab", s);
 }
 
-// Cases from the original project's Arabic tests.
 void test_sanitize_keeps_style_markers(void) {
-    char s[] = "\x01Title\x01 and \x02code\x02\tend";
+    char s[] = "\x01Title\x01 and \x02code\x02 \x03it\x03\tend";
     textSanitize(s);
-    TEST_ASSERT_EQUAL_STRING("\x01Title\x01 and \x02code\x02 end", s);
+    TEST_ASSERT_EQUAL_STRING("\x01Title\x01 and \x02code\x02 \x03it\x03 end", s);
 }
 
-void test_arabic_shaping(void) {
-    char out[128];
-    // "نعم" (yes): isolated -> initial noon, medial ain, final meem, reversed for display
-    arabicToVisual("\xD9\x86\xD8\xB9\xD9\x85", 'R', out, sizeof(out));
-    TEST_ASSERT_EQUAL_STRING("\xEF\xBB\xA2\xEF\xBB\x8C\xEF\xBB\xA7", out);  // FEE2 FECC FEE7
-    // Lam-Alef ligature: "لا" -> FEFB
-    arabicToVisual("\xD9\x84\xD8\xA7", 'R', out, sizeof(out));
-    TEST_ASSERT_EQUAL_STRING("\xEF\xBB\xBB", out);
-    TEST_ASSERT_EQUAL(1, arabicCellCount("\xD9\x84\xD8\xA7"));
-}
-
-void test_bidi_keeps_latin_runs(void) {
-    char out[128];
-    // "نعم API" in an RTL paragraph: the Latin word stays left-to-right, placed on the left
-    arabicToVisual("\xD9\x86\xD8\xB9\xD9\x85 API", 'R', out, sizeof(out));
-    TEST_ASSERT_EQUAL_STRING("API \xEF\xBB\xA2\xEF\xBB\x8C\xEF\xBB\xA7", out);
-    TEST_ASSERT_EQUAL('R', textBaseDirection("\xD9\x86\xD8\xB9\xD9\x85 API"));
-    TEST_ASSERT_EQUAL('L', textBaseDirection("API \xD9\x86\xD8\xB9\xD9\x85"));
+void test_utf8_length(void) {
+    TEST_ASSERT_EQUAL(0, utf8Length(""));
+    TEST_ASSERT_EQUAL(4, utf8Length("caf\xC3\xA9"));
 }
 
 int main(int, char **) {
@@ -92,7 +75,6 @@ int main(int, char **) {
     RUN_TEST(test_wrap_max_lines);
     RUN_TEST(test_sanitize);
     RUN_TEST(test_sanitize_keeps_style_markers);
-    RUN_TEST(test_arabic_shaping);
-    RUN_TEST(test_bidi_keeps_latin_runs);
+    RUN_TEST(test_utf8_length);
     return UNITY_END();
 }

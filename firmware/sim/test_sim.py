@@ -67,12 +67,66 @@ def test_enter_selects_the_cursor(kp):
     assert presses(kp)[-1]["idx"] == 1
 
 
-def test_esc_and_encoder_click_leave_it_to_the_pc(kp):
-    for key in (5, 0):
-        kp.msg({**sc.SCREENS["permission"], "id": f"p-{key}"})
-        kp.wait(300)
-        kp.key(key)
-        assert presses(kp)[-1]["act"] == "pc"
+def test_a_decision_has_no_way_out_but_an_answer(kp):
+    kp.msg(sc.SCREENS["permission"])
+    kp.wait(300)
+    before = len(presses(kp))
+    kp.key(5)  # Esc: nothing to leave to the PC
+    assert len(presses(kp)) == before, "Esc must not answer a permission dialog"
+    assert ink(kp.image(), (10, 100, 310, 150)) > 100, "the dialog is still on screen"
+
+
+def test_esc_ends_the_finished_screen(kp):
+    kp.msg(sc.SCREENS["finished"])
+    kp.wait(300)
+    kp.key(5)
+    assert presses(kp)[-1]["act"] == "done"
+
+
+def test_pressing_the_knob_is_enter(kp):
+    kp.msg({**sc.SCREENS["question"], "id": "q-knob"})
+    kp.wait(300)
+    kp.key(8)  # move to the second option
+    kp.key(0)  # the knob press
+    p = presses(kp)[-1]
+    assert p["act"] == "pick" and p["idx"] == 1 and p["key"] == 7, "the knob press answers like Enter"
+    kp.msg({**sc.SCREENS["finished"], "id": "s-knob"})
+    kp.wait(300)
+    kp.key(0)  # Enter on the first option (continue)
+    assert presses(kp)[-1]["idx"] == 0
+
+
+def test_the_screen_never_dims_on_a_wire(kp):
+    kp.power("usb")
+    kp.wait(11000)  # the power source is read every 10 s
+    kp.wait(90000)  # well past the 60 s idle time
+    assert kp.backlight() == 80
+
+
+def test_on_battery_the_screen_dims_and_wakes_on_a_key_or_a_request(kp):
+    kp.power("battery")
+    kp.wait(11000)
+    assert kp.backlight() == 80, "bright right after start"
+    kp.wait(65000)
+    assert kp.backlight() == 8, "dim after a minute without a key or a request"
+    kp.key(4)  # a key press wakes it (and does nothing else)
+    assert kp.backlight() == 80
+    kp.wait(65000)
+    assert kp.backlight() == 8
+    kp.msg(sc.SCREENS["permission"])  # a request lights it up at once
+    assert kp.backlight() == 80
+    kp.msg({"t": "close", "id": sc.SCREENS["permission"]["id"], "why": "done"})
+    kp.wait(30000)
+    assert kp.backlight() == 80, "stays bright for a while after the last interaction"
+
+
+def test_plugging_in_while_dim_lights_the_screen(kp):
+    kp.power("battery")
+    kp.wait(80000)
+    assert kp.backlight() == 8
+    kp.power("usb")
+    kp.wait(11000)
+    assert kp.backlight() == 80
 
 
 def test_encoder_turn_moves_the_cursor(kp):
@@ -118,25 +172,26 @@ def test_session_list_selects_a_session(kp):
     assert s and s[-1]["act"] == "select" and s[-1]["sid"] in ("aaaa0001", "bbbb0002")
 
 
-def test_mic_button_sends_push_to_talk(kp):
-    kp.hold(9, 300)
-    mic = [m for m in kp.tx if m["t"] == "mic"]
-    assert [m["act"] for m in mic] == ["start", "stop"]
+def test_feed_appends_and_drops_oldest_entries(kp):
+    kp.msg(sc.status(log=[]))
+    sid = sc.SESSION["id"]
+    for i in range(45):  # more than the keypad keeps: the oldest go, the newest stay on screen
+        kp.msg({"t": "feed", "sid": sid, "drop": 1 if i >= 32 else 0, "add": [{"k": "c", "t": f"entry number {i}"}]})
+    assert ink(kp.image(), (0, 60, 320, 150)) > 100
+    kp.msg({"t": "feed", "sid": "someone-else", "add": [{"k": "c", "t": "not this session"}]})  # ignored
+    kp.msg({"t": "feed", "sid": sid, "full": []})
+    assert ink(kp.image(), (0, 60, 320, 120)) < 400  # an empty transcript: just the welcome box
 
 
 def test_host_silence_shows_waiting_then_recovers(kp):
     kp.host(False)
     kp.wait(8000)
     assert ink(kp.image(), (0, 0, 320, 60)) > 0
-    assert any(m["t"] == "hello" for m in kp.tx)   # it keeps announcing itself
-    kp.msg(sc.HELLO)                                # the host answers: back to the status screen
+    kp.tx.clear()
+    kp.msg(sc.HELLO)                                # the host says hello again: the keypad introduces itself, back to status
+    assert [m["t"] for m in kp.tx] == ["hello"] and kp.tx[0]["v"] == 3
     kp.msg(sc.status())
     assert ink(kp.image(), BOTTOM_RIGHT) > 20
-
-
-def test_arabic_text_is_drawn(kp):
-    kp.msg(sc.SCREENS["arabic"])
-    assert ink(kp.image(), (10, 10, 310, 60)) > 100
 
 
 def test_holding_down_repeats_the_cursor_but_never_decides(kp):
