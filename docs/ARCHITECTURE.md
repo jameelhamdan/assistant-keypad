@@ -17,7 +17,7 @@ One program, `keypad`. The tray hosts the agent; `keypad agent` runs it alone; `
 | `ipc.py`, `server.py` | agent API on `127.0.0.1`, random port, token in `agent.json`; length-prefixed JSON; routes in `server.py` |
 | `core/agent.py` | wires sessions, dialogs, keypads, settings; pushes `status` and `feed` to keypads |
 | `core/hooks.py` | decisions: permission, `AskUserQuestion`, stop (continue / saved prompt) |
-| `core/shortcuts.py` | saved prompts: the list on the keypad; sent to a busy session with its next tool result (or stop), run at once in an idle one (`claude -p --resume`, prompt on stdin) |
+| `core/shortcuts.py` | saved prompts: the list on the keypad; queued for the session and delivered with its next tool result (or stop), or your next prompt |
 | `updater.py` | checks GitHub releases, downloads the installer for this OS, verifies its SHA-256, starts it (silent setup on Windows, a small script on macOS) and quits; installed builds only |
 | `core/stats.py` | health counters (hook times, ignored presses, reconnects) shown by `keypad status` |
 | `core/dialogs.py` | one dialog owns the keypads at a time, FIFO across sessions; validates presses |

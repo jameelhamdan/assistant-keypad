@@ -54,7 +54,7 @@ Tray → *Options*, *Saved prompts*, or edit `config.json` (reloaded on save). S
 
 A first run starts with six saved prompts (Tests, Commit, Review, Explain, Summary, Clear); change them in the tray. If you already had a config, tray -> Saved prompts -> *Add the suggested prompts* adds them.
 
-Saved prompts: the first five are on keys 1, 2, 3, 4 and 8 of the keypad's status screen; Enter opens the full list. A press sends the prompt to the shown session: while Claude works it arrives with the next tool result, and an idle session is resumed in the background (`claude -p --resume`) and runs it at once (tray option *Run a saved prompt at once in an idle session*). The result shows in the feed; an already open terminal updates when you next type there.
+Saved prompts: the first five are on keys 1, 2, 3, 4 and 8 of the keypad's status screen; Enter opens the full list. A press sends the prompt to the shown session: while Claude works it arrives with the next tool result, and an idle session gets it with your next prompt.
 
 A keypad can be paired with up to three computers (one Wi-Fi network); one holds it at a time. A second computer is told who has it; tray -> your keypad -> *Use keypad here* takes it over. `keypad status` also shows health counters: reconnects, ignored presses, hook times.
 

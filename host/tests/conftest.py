@@ -43,14 +43,6 @@ class Env:
             self.fake.close()
 
 
-@pytest.fixture(autouse=True)
-def no_real_claude(monkeypatch):
-    """Tests never start the real claude: an idle session's saved prompt falls back to queueing."""
-    from keypad.core.shortcuts import Shortcuts
-
-    monkeypatch.setattr(Shortcuts, "_spawn", lambda self, sid, cwd, prompt: None)
-
-
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("KEYPAD_HOME", str(tmp_path))

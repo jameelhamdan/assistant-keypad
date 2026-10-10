@@ -58,7 +58,6 @@ class Behavior:
     ask_when_finished: int = 60  # s away from the PC before Claude finishing is asked on the keypad (0 = always, -1 = never)
     notify_when_finished: bool = True  # light up the keypad when Claude finishes and nothing is asked on it
     always_for_session: bool = False  # "don't ask again" lasts this Claude Code session only, not for good
-    run_when_idle: bool = True  # a saved prompt for an idle session runs by itself (claude -p --resume); off: it waits for your next prompt
     auto_update: bool = True  # install new releases by itself (installed builds only); off: the tray offers them
     timeout: int = 300  # s the keypad waits for an answer before the PC takes over
 

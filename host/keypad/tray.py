@@ -25,7 +25,6 @@ STOP_PRESETS = [  # (ask_when_finished to set, label, whether a stored value cou
 OPTIONS = [  # (path in config, label)
     (("behavior", "notify_when_finished"), "Light up the keypad when Claude finishes"),
     (("behavior", "always_for_session"), "“Don't ask again” lasts this session only"),
-    (("behavior", "run_when_idle"), "Run a saved prompt at once in an idle session"),
     (("behavior", "auto_update"), "Update Keypad automatically"),
 ]
 

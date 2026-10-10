@@ -28,7 +28,7 @@ Everything Keypad does today. **Status** says how far each feature has been chec
 | Questions (`AskUserQuestion`) | Single and multi-select answered on the keypad, with option descriptions; an "Other…" row hands free text back to the PC | HW, Sim |
 | Claude finished | *continue* (keeps Claude working) or a saved prompt; asked only when you have been away from the PC for a while (`ask_when_finished`: always / only when away / never) | Sim |
 | Light-up on finish | A toast wakes the keypad when Claude finishes and nothing is asked on it (`notify_when_finished`) | Sim |
-| Saved prompts | Up to 16 prompts you define; six defaults on a first run (Tests, Commit, Review, Explain, Summary, Clear); sent to a working session with its next tool result, run at once in an idle one (`claude -p --resume`, setting `run_when_idle`) | HW, Sim |
+| Saved prompts | Up to 16 prompts you define; six defaults on a first run (Tests, Commit, Review, Explain, Summary, Clear); queued for the session: delivered with its next tool result, stop, or your next prompt | HW, Sim |
 | Answered in the terminal first | The keypad dialog closes by itself | Test |
 | Fallback, never auto-approve | Paused, unreachable, no answer in 5 minutes (`timeout`), or a lost keypad past a 20 s grace: Claude Code asks in the terminal | Sim, Test |
 | Transcript privacy | Tool output and file contents are not read into the feed; secrets in prompts are redacted | Test |
