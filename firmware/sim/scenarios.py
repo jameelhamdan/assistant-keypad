@@ -9,7 +9,7 @@ LOG = [{"k": "u", "t": "fix the failing tests in api/"},
 
 def status(mode="default", state="working", sessions=None, **kw):
     ss = sessions or [dict(SESSION, mode=mode, state=state)]
-    return {"t": "status", "sessions": ss, "sel": ss[0]["id"], "pinned": False, "queue": kw.get("queue", 0),
+    return {"t": "status", "sessions": ss, "sel": ss[0]["id"], "queue": kw.get("queue", 0),
             "paused": kw.get("paused", False), "menu": kw.get("menu", False), "log": kw.get("log", LOG)}
 
 
@@ -28,6 +28,6 @@ SCREENS = {
              "project": "money-mind", "body": "api/auth.py\n-    if user.pw == pw:\n+    if verify(user.pw, pw):\n     return token",
              "q": "Do you want to make this edit?", "items": ["Yes", "Yes, allow all edits this session", "No"]},
     "finished": {"t": "screen", "id": "s-1", "tpl": "prompt", "title": "Claude finished", "project": "money-mind",
-                 "items": ["continue", "Write tests"], "notes": ["keep going", "Add tests for the change."], "esc": "done"},
+                 "items": ["continue", "Write tests"], "esc": "done"},
 }
 MODES = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]

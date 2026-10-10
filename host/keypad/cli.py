@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import time
 
 from . import claudecfg, config, ipc, service
 from .dirs import self_path
@@ -16,24 +15,9 @@ def call(method: str, path: str, body=None, timeout: float = 30):
         raise RuntimeError("Keypad is not running (start it from the tray, or `keypad tray`)") from None
 
 
-def stop_agent() -> None:
-    """Asks a running agent to exit."""
-    if not ipc.alive():
-        return
-    try:
-        ipc.request("POST", "/quit", timeout=5)
-    except (ipc.AgentNotRunning, ipc.RequestError):
-        pass
-    for _ in range(30):
-        if not ipc.alive():
-            return
-        time.sleep(0.1)
-
-
 def cmd_install(args: list[str]) -> None:
-    stop_agent()
-    cfg, _ = config.load()
-    claudecfg.install(self_path(), cfg.behavior)
+    ipc.quit_agent(wait=3)
+    claudecfg.install(self_path())
     print("Claude Code integration installed:", claudecfg.settings_path())
     service.install(self_path())
     print("Keypad starts at login and is running now.")
@@ -41,7 +25,7 @@ def cmd_install(args: list[str]) -> None:
 
 
 def cmd_uninstall(args: list[str]) -> None:
-    stop_agent()
+    ipc.quit_agent(wait=3)
     service.uninstall()
     claudecfg.uninstall()
     print("Removed the Claude Code integration and the login items.")
@@ -74,6 +58,24 @@ def cmd_status(args: list[str]) -> None:
     _table([("SESSION", "PROJECT", "STATE", "FEED", "DETAIL")] +
            [(x["id"][:8], x["project"], x["state"], "ok" if x["feed_ok"] else "unreadable", f"{x['title']} {x['detail']}")
             for x in s["sessions"]])
+    _health(s.get("stats") or {})
+
+
+def _health(st: dict) -> None:
+    """Counters since the agent started: dropped presses, reconnects, how long the hooks took."""
+    counts = st.get("counts") or {}
+    print(f"\nHEALTH (agent up {_duration(st.get('uptime', 0))})")
+    print(f"  keypad connections  {counts.get('keypad_connects', 0)} ({counts.get('keypad_disconnects', 0)} dropped)")
+    print(f"  presses ignored     {counts.get('press_stale', 0)} stale, {counts.get('press_rejected', 0)} not offered, "
+          f"{counts.get('press_dropped', 0)} lost")
+    if hooks := st.get("hooks"):
+        _table([("HOOK", "CALLS", "AVERAGE", "SLOWEST")] +
+               [(e, str(h["n"]), f"{h['avg_ms']} ms", f"{h['max_ms']} ms") for e, h in hooks.items()])
+
+
+def _duration(seconds: int) -> str:
+    h, m = divmod(seconds // 60, 60)
+    return f"{h} h {m} min" if h else f"{m} min"
 
 
 def _table(rows: list[tuple[str, ...]]) -> None:

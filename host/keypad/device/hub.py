@@ -12,11 +12,14 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from .. import config, proto, secure
+from ..proto import Refusal
 from .discovery import Discovery
-from .links import Link, LinkClosed, UsbLink, WifiLink, usb_devices
+from .links import Link, LinkClosed, WifiLink
+from .pairing import UsbSetup
 
 DIAL_EVERY = 2.0  # s between attempts to reach a paired keypad that is not connected
 FLAP_SECONDS = 8.0  # a connection shorter than this counts as a drop-out
+BUSY_RETRY = 15.0  # s between looks at a keypad another computer is using
 PING_EVERY = 2.0
 DEAD_AFTER = 8.0
 HELLO_WITHIN = 5.0
@@ -55,6 +58,25 @@ class Conn:
         except (proto.InvalidMessage, LinkClosed, OSError) as e:
             self.hub.log.debug("send to %s failed: %s", self.id, e)
             return False
+
+    def push_feed(self, sel: str, log: list[dict[str, str]]) -> None:
+        """Gives the keypad the transcript of the selected session, when it changed."""
+        # The oldest entries go until the text fits the keypad's buffer and the message the protocol limit.
+        while log and sum(len(x["t"].encode()) + 1 for x in log) > proto.LOG_POOL:
+            log = log[1:]
+        if self.feed == (sel, log):
+            return
+        while True:
+            msg = {"t": "feed", "sid": sel, "full": log}
+            try:
+                proto.encode(msg)
+                break
+            except proto.InvalidMessage:
+                if not log:
+                    return
+                log = log[1:]
+        if self.send(msg):
+            self.feed = (sel, log)
 
     def close(self) -> None:
         if not self.done.is_set():
@@ -108,13 +130,16 @@ class Conn:
                         pass
 
 
-def explain_refusal(why: str) -> str:
-    """A keypad's refusal of a Wi-Fi connection, in words for the tray."""
-    if "bad hello" in why or "version" in why:
+def explain_refusal(why: str, code: str = "", host: str = "") -> str:
+    """A keypad's refusal of a Wi-Fi connection, in words for the tray. code is the keypad's own
+    reason (proto.Refusal); firmware that predates it is recognised by the words."""
+    if code == Refusal.BUSY:
+        return f"it is in use by {host or 'another computer'}: choose Use keypad here in the tray to take it over"
+    if code == Refusal.BAD_HELLO or (not code and ("bad hello" in why or "version" in why)):
         return "its firmware is out of date for this app: flash it over USB (make flash)"
-    if "another computer" in why:
-        return "it is paired with another computer: use Set up Wi-Fi… here to take it over"
-    if "not paired" in why:
+    if code == Refusal.OTHER_HOST or (not code and "another computer" in why):
+        return "it is not paired with this computer: use Set up Wi-Fi… with the USB cable to add this computer"
+    if code == Refusal.NOT_PAIRED or (not code and "not paired" in why):
         return "it is not paired: use Set up Wi-Fi… with the USB cable"
     return f"it refused the connection ({why}): use Set up Wi-Fi… over USB"
 
@@ -122,31 +147,19 @@ def explain_refusal(why: str) -> str:
 class Hub:
     def __init__(self, store: config.Store, ev: Events, host_name: str = "", log: logging.Logger | None = None):
         self.store, self.ev = store, ev
-        # USB is only for setup (pairing). The agent doesn't open a port (so a flasher can
-        # have it, and another ESP32 board is not reset by a probe) unless setup is under way.
-        self._pairing_until = 0.0  # monotonic time until which USB is scanned for pairing
         self.host_name = host_name
         self.log = log or logging.getLogger("keypad")
         self.disc = Discovery(self.log)
         self._lock = threading.Lock()
         self._conns: dict[str, Conn] = {}
+        self._take: set[str] = set()  # keypads to take over from another computer on the next dial
         self._flaps: dict[str, int] = {}  # keypad id -> connections in a row that dropped within seconds
         self._dial_after: dict[str, float] = {}  # keypad id -> earliest next attempt (backoff while it keeps dropping)
         self.problems: dict[str, str] = {}  # keypad id -> why it cannot connect (shown in the tray)
         self._busy: set[str] = set()  # USB ports, dial and update jobs in progress
-        # USB ports to leave alone until a time: a board that isn't a keypad (another ESP32 board
-        # shares the vendor id) or a keypad already on Wi-Fi. Opening a port toggles DTR, which resets it.
-        self._quiet: dict[str, float] = {}
+        self.usb = UsbSetup(self)  # USB is only for setup: pairing and unpairing
 
     # ---- supervision ----
-
-    def open_pairing(self, seconds: float = 300) -> None:
-        """Scans USB for a while (Add keypad…; the pairing page keeps renewing it)."""
-        self._pairing_until = time.monotonic() + seconds
-
-    def usb_wanted(self) -> bool:
-        """Whether to open USB ports now: only while a pairing page is open."""
-        return time.monotonic() < self._pairing_until
 
     def run(self, stop: threading.Event) -> None:
         """Scans USB, browses mDNS and dials paired keypads until stop is set."""
@@ -154,17 +167,11 @@ class Hub:
         last_dial: dict[str, float] = {}
         try:
             while not stop.is_set():
-                for port, dev_id in usb_devices() if self.usb_wanted() else []:
-                    if time.monotonic() < self._quiet.get(port, 0.0):
-                        continue
-                    if dev_id and (c := self.get(dev_id)) and c.live:
-                        continue  # already connected over Wi-Fi: opening its port would reboot it
-                    if self._claim("usb:" + port):
-                        threading.Thread(target=self._serve_usb, args=(port,), daemon=True).start()
+                self.usb.scan()
                 for d in self.store.devices():
                     if not d.key or ((c := self.get(d.id)) and c.live) or time.monotonic() - last_dial.get(d.id, -1e9) < DIAL_EVERY or time.monotonic() < self._dial_after.get(d.id, 0):
                         continue
-                    if self._claim("dial:" + d.id):
+                    if self.claim("dial:" + d.id):
                         last_dial[d.id] = time.monotonic()
                         threading.Thread(target=self._dial, args=(d,), daemon=True).start()
                 stop.wait(2)
@@ -173,34 +180,23 @@ class Hub:
                 c.close()
             self.disc.stop()
 
-    def _claim(self, key: str) -> bool:
+    def take(self, dev_id: str) -> None:
+        """Takes a keypad over from the other computer using it: the next dial asks the keypad to let go."""
+        self._take.add(dev_id)
+        self._dial_after.pop(dev_id, None)
+        self._flaps.pop(dev_id, None)
+        self.problems.pop(dev_id, None)
+
+    def claim(self, key: str) -> bool:
         with self._lock:
             if key in self._busy:
                 return False
             self._busy.add(key)
             return True
 
-    def _release(self, key: str) -> None:
+    def release(self, key: str) -> None:
         with self._lock:
             self._busy.discard(key)
-
-    def _serve_usb(self, port: str) -> None:
-        try:
-            link = UsbLink(port)
-        except Exception as e:
-            self.log.debug("usb open failed port=%s: %s", port, e)
-            time.sleep(3)  # busy (flasher, serial monitor): back off
-            self._release("usb:" + port)
-            return
-        try:
-            started = time.monotonic()
-            answered = self.serve(link)
-            if time.monotonic() - started < 3:  # not a keypad, or one that is already connected over Wi-Fi
-                if not answered:
-                    self.log.info("USB port %s doesn't answer as a keypad", port)
-                self._quiet[port] = time.monotonic() + (60 if answered else 30)
-        finally:
-            self._release("usb:" + port)
 
     def _dial(self, d: config.Device) -> None:
         try:
@@ -211,7 +207,13 @@ class Hub:
                 addrs.append(f"{d.last_ip}:{proto.TCP_PORT}")
             for a in dict.fromkeys(addrs):
                 try:
-                    link = WifiLink(a, self.store.host_id(), d.id, d.key)
+                    link = WifiLink(a, self.store.host_id(), d.id, d.key, take=d.id in self._take)
+                except secure.Refused as e:
+                    self.log.info("keypad %s refused the connection: %s", d.id, e)
+                    self.problems[d.id] = explain_refusal(e.why, e.code, e.host)
+                    if e.code == Refusal.BUSY:  # someone else has it: look again now and then, not every 2 s
+                        self._dial_after[d.id] = time.monotonic() + BUSY_RETRY
+                    return
                 except secure.SecureError as e:
                     self.log.info("keypad %s refused the connection: %s", d.id, e)
                     self.problems[d.id] = explain_refusal(str(e))
@@ -219,6 +221,7 @@ class Hub:
                 except OSError as e:
                     self.log.debug("wifi dial failed id=%s addr=%s: %s", d.id, a, e)
                     continue
+                self._take.discard(d.id)
                 started = time.monotonic()
                 try:
                     self.serve(link)
@@ -226,7 +229,7 @@ class Hub:
                     self._note_flap(d.id, time.monotonic() - started)
                 return
         finally:
-            self._release("dial:" + d.id)
+            self.release("dial:" + d.id)
 
     def _note_flap(self, dev_id: str, lived: float) -> None:
         """A keypad that drops within seconds of every connection (another copy of Keypad,
@@ -244,8 +247,31 @@ class Hub:
     def serve(self, link: Link) -> bool:
         """Runs the protocol on an open link until it dies (also used for the
         fake keypad). False when no keypad answered on it."""
-        inbox: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
         quit_ = threading.Event()
+        inbox = self._read_in_background(link, quit_)
+        try:
+            hello = self._handshake(link, inbox)
+            if hello is None:
+                return False
+            c = Conn(self, link, hello)
+            if not self._register(c):
+                return True  # a keypad, already connected over Wi-Fi
+            try:
+                self._greet(c)
+                self.ev.connected(c)
+                self._loop(c, inbox)
+            except Exception:  # a bug in what follows a connection must be seen, not die in a thread nobody reads
+                self.log.exception("keypad %s: error while serving the connection", c.id)
+            finally:
+                self._unregister(c)
+            return True
+        finally:
+            quit_.set()
+            link.close()
+
+    def _read_in_background(self, link: Link, quit_: threading.Event) -> queue.Queue[bytes | None]:
+        """What the link receives, in order; None when it is lost."""
+        inbox: queue.Queue[bytes | None] = queue.Queue(maxsize=16)
 
         def reader() -> None:
             while True:
@@ -264,49 +290,37 @@ class Hub:
                     return
 
         threading.Thread(target=reader, daemon=True).start()
+        return inbox
+
+    def _handshake(self, link: Link, inbox: queue.Queue[bytes | None]) -> dict[str, Any] | None:
+        """Says hello and waits for the keypad's own; None if none came or it is not one we can serve."""
         try:
-            # Say hello; the keypad answers with its own.
+            link.send(proto.encode(self._hello()))
+        except Exception:
+            return None
+        hello = None
+        deadline = time.monotonic() + HELLO_WITHIN
+        while hello is None:
             try:
-                link.send(proto.encode(self._hello()))
-            except Exception:
-                return False
-            hello = None
-            deadline = time.monotonic() + HELLO_WITHIN
-            while hello is None:
-                try:
-                    b = inbox.get(timeout=max(0.01, deadline - time.monotonic()))
-                except queue.Empty:
-                    self.log.debug("no hello from %s", link.addr)
-                    return False
-                if b is None:
-                    return False
-                try:
-                    m = proto.decode(b)
-                except proto.InvalidMessage:
-                    continue
-                if m["t"] == "hello":
-                    hello = m
-            if not str(hello.get("id", "")).startswith("kp-") or hello.get("v") != proto.VERSION:
-                self.log.warning("incompatible keypad id=%s protocol=%s fw=%s", hello.get("id"), hello.get("v"), hello.get("fw"))
-                if str(hello.get("id", "")).startswith("kp-"):
-                    self.problems[hello["id"]] = (f"its firmware ({hello.get('fw', '?')}) speaks protocol v{hello.get('v')}, "
-                                                  f"this app v{proto.VERSION}: flash it over USB (make flash)")
-                return False
-            c = Conn(self, link, hello)
-            if not self._register(c):
-                return True  # a keypad, already connected over Wi-Fi
+                b = inbox.get(timeout=max(0.01, deadline - time.monotonic()))
+            except queue.Empty:
+                self.log.debug("no hello from %s", link.addr)
+                return None
+            if b is None:
+                return None
             try:
-                self._greet(c)
-                self.ev.connected(c)
-                self._loop(c, inbox)
-            except Exception:  # a bug in what follows a connection must be seen, not die in a thread nobody reads
-                self.log.exception("keypad %s: error while serving the connection", c.id)
-            finally:
-                self._unregister(c)
-            return True
-        finally:
-            quit_.set()
-            link.close()
+                m = proto.decode(b)
+            except proto.InvalidMessage:
+                continue
+            if m["t"] == "hello":
+                hello = m
+        if not str(hello.get("id", "")).startswith("kp-") or hello.get("v") != proto.VERSION:
+            self.log.warning("incompatible keypad id=%s protocol=%s fw=%s", hello.get("id"), hello.get("v"), hello.get("fw"))
+            if str(hello.get("id", "")).startswith("kp-"):
+                self.problems[hello["id"]] = (f"its firmware ({hello.get('fw', '?')}) speaks protocol v{hello.get('v')}, "
+                                              f"this app v{proto.VERSION}: flash it over USB (make flash)")
+            return None
+        return hello
 
     def _loop(self, c: Conn, inbox: queue.Queue) -> None:
         last_rx = next_ping = time.monotonic()
@@ -409,24 +423,6 @@ class Hub:
 
     # ---- actions ----
 
-    def provision(self, dev_id: str, ssid: str, password: str, name: str) -> None:
-        """Pairs a USB-connected keypad and gives it Wi-Fi credentials."""
-        c = self.get(dev_id)
-        if not c or c.link.kind != "usb":
-            raise RuntimeError("connect the keypad with a USB cable to pair it")
-        name = name or dev_id
-        key = secure.new_key()
-        m = c.request({"t": "provision", "ssid": ssid, "pass": password, "host": self.store.host_id(),
-                       "key": key, "name": name}, "provisioned", 10)
-        if not m.get("ok"):
-            raise RuntimeError(f"keypad rejected the settings: {m.get('err', '')}")
-
-        def upd(d: config.Device) -> None:
-            d.key, d.name, d.ssid = key, name, ssid
-
-        self.store.update(dev_id, upd)
-        self.send_settings(dev_id)
-
     def unpair(self, dev_id: str) -> None:
         """Tells a connected keypad to wipe its Wi-Fi pairing, then forgets it.
         A keypad that stays connected over USB stays listed, as USB only."""
@@ -442,12 +438,21 @@ class Hub:
         else:
             self.store.remove(dev_id)
 
+    def wait_reconnect(self, dev_id: str, old: Conn | None, timeout: float) -> Conn | None:
+        """The keypad's new connection after it restarted (not `old`), or None if it did not come back."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if (c := self.get(dev_id)) is not None and c is not old:
+                return c
+            time.sleep(0.5)
+        return None
+
     def update_firmware(self, dev_id: str, image: bytes, progress: Callable[[int], None] | None = None) -> None:
         """Streams a firmware image over the live link (USB or Wi-Fi)."""
         c = self.get(dev_id)
         if not c:
             raise RuntimeError("keypad not connected")
-        if not self._claim("ota:" + dev_id):
+        if not self.claim("ota:" + dev_id):
             raise RuntimeError("an update is already running on this keypad")
         try:
             m = c.request({"t": "ota_begin", "size": len(image), "md5": hashlib.md5(image).hexdigest()}, "ota", 10)
@@ -468,4 +473,4 @@ class Hub:
             if not m.get("ok"):
                 raise RuntimeError(f"update failed: {m.get('err', '')}")
         finally:
-            self._release("ota:" + dev_id)
+            self.release("ota:" + dev_id)

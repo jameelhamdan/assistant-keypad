@@ -65,3 +65,30 @@ def test_a_dialog_with_no_keypad_raises_with_a_reason():
 
     with pytest.raises(DialogError, match="no keypad"):
         Dialogs(Nobody(), logging.getLogger("t")).run(Ctx(), "p", "x", lambda d: None)
+
+
+def test_screen_ids_differ_between_agent_runs():
+    """A keypad repeats its last answer when it sees that screen id again: a restarted agent must not reuse ids."""
+    import logging
+
+    from keypad.core.ctx import Ctx
+    from keypad.core.dialogs import Dialogs
+
+    class Disp:
+        def targets(self):
+            return ["kp-1"]
+
+        def send_to(self, dev, msg):
+            ids.append(msg.get("id"))
+
+    ids: list = []
+    for _ in range(2):
+        d = Dialogs(Disp(), logging.getLogger("test"))
+        ctx = Ctx().with_timeout(0.3)
+        try:
+            d.run(ctx, "p", "question", lambda dlg: dlg.show(ctx, {"tpl": "select", "items": ["a"]}))
+        except Exception:
+            pass
+    screens = [i for i in ids if i and not i.endswith("-0")]
+    first, second = screens[0], [i for i in screens if i != screens[0]][0]
+    assert first.split("-")[0] != second.split("-")[0]

@@ -328,7 +328,15 @@ void drawWaiting(const Model &m) {
         gElbow(x, y, T->dim);
         fit(MONO, x + 2 * MONO.cw, y, 34, line, m.wifi == WifiState::Failed ? T->error : T->dim);
         gElbow(x, y + 18, T->dim);
-        text(MONO, x + 2 * MONO.cw, y + 18, "is the Keypad app running?", T->dim);
+        if (m.lastHostAt) {   // it was here: say how long ago
+            uint32_t s = (millis() - m.lastHostAt) / 1000;
+            if (s < 90) snprintf(line, sizeof(line), "last seen %us ago, app running?", (unsigned)s);
+            else if (s < 5400) snprintf(line, sizeof(line), "last seen %um ago, app running?", (unsigned)((s + 30) / 60));
+            else snprintf(line, sizeof(line), "last seen %uh ago, app running?", (unsigned)((s + 1800) / 3600));
+            text(MONO, x + 2 * MONO.cw, y + 18, line, T->dim);
+        } else {
+            text(MONO, x + 2 * MONO.cw, y + 18, "is the Keypad app running?", T->dim);
+        }
     }
     snprintf(line, sizeof(line), "%s  v%s", m.id, KEYPAD_FW_VERSION);
     indicators(m, 128);
@@ -547,43 +555,48 @@ void drawStatus(Model &m) {
         gPlay(modeX + 5, hy + 2, c);
         modeX -= 6;
     }
-    char hint[64];
-    snprintf(hint, sizeof(hint), "%s%s%s", st.n > 1 ? "6 sessions  " : "", st.nLog ? "4/8 scroll  " : "",
-             st.menu ? "7 send" : "");
+    char hint[96] = "";
+    for (uint8_t i = 0; i < st.nQuick; i++) {   // saved prompts on keys 1-3: the most useful hint comes first
+        size_t n = strlen(hint);
+        snprintf(hint + n, sizeof(hint) - n, "%u %s  ", i < DIRECT_PICKS ? i + 1 : i == 3 ? KEY_QUICK_4 : KEY_QUICK_5, st.quick[i]);
+    }
+    {
+        size_t n = strlen(hint);
+        snprintf(hint + n, sizeof(hint) - n, "%s%s%s", st.n > 1 ? "6 sessions  " : "", st.menu ? "7 more  " : "",
+                 st.nLog ? "knob scroll" : "");
+    }
     // Paused must be visible even while the spinner runs: it is the one state where nothing reaches the keypad.
-    if (st.paused) fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, "paused: answers on the PC", T->warning);
+    if (st.queued[0]) {   // a saved prompt waits for Claude's next step: say so, and how to take it back
+        snprintf(hint, sizeof(hint), "queued: %s  5 cancel", st.queued);
+        fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->permission);
+    } else if (st.paused) fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, "paused: answers on the PC", T->warning);
     else fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->dim);
 }
 
 // The session picker (6): which sessions the keypad mirrors, which one it
-// shows, and whether it follows the latest activity.
+// shows.
 void drawSessions(const Model &m) {
     const StatusModel &st = m.status;
     int16_t right = indicators(m, 3);
     gStar(X0, 3, T->claude, 4);
     text(MONO, X0 + 2 * MONO.cw, 3, "Sessions", T->text, true);
     char info[32];
-    snprintf(info, sizeof(info), "%u live  %s", st.n, st.pinned ? "pinned" : "following latest");
+    snprintf(info, sizeof(info), "%u live", st.n);
     int16_t iw = utf8Length(info) * SMALL.cw;
     text(SMALL, right - iw, 6, info, T->dim);
     rule(22, T->faint);
 
     constexpr int ROWS = 8;
     int16_t y0 = 25;
-    int rowsTotal = st.n + 1;
+    int rowsTotal = st.n;
     int top = m.pick - ROWS + 1 > 0 ? m.pick - ROWS + 1 : 0;
     for (int r = top; r < rowsTotal && r < top + ROWS; r++) {
         int16_t y = y0 + (r - top) * 16;
         bool cur = r == m.pick;
         if (cur) gChevron(X0, y, T->claude);
-        if (r == 0) {
-            fit(MONO, X0 + 5 * MONO.cw, y, 28, "Follow latest activity", cur ? T->claude : T->text);
-            if (!st.pinned) gCheck(320 - X0 - 10, y, T->success);
-            continue;
-        }
-        const SessionInfo &x = st.s[r - 1];
+        const SessionInfo &x = st.s[r];
         char num[6];
-        snprintf(num, sizeof(num), "%d.", r);
+        snprintf(num, sizeof(num), "%d.", r + 1);
         text(MONO, X0 + 2 * MONO.cw, y, num, cur ? T->claude : T->dim);
         uint16_t c = stateColor(x.state);
         cv->fillCircle(X0 + 5 * MONO.cw + 3, y + 8, 3, c);
@@ -597,7 +610,7 @@ void drawSessions(const Model &m) {
         } else {
             snprintf(state, sizeof(state), "%s", stateWord(x.state));
         }
-        bool shown = st.pinned && !strcmp(x.id, st.sel);
+        bool shown = !strcmp(x.id, st.sel);
         int scells = utf8Length(state);
         int16_t sx = 320 - X0 - (shown ? 12 : 0) - scells * SMALL.cw;
         fit(SMALL, sx, y + 3, scells, state, busy(x.state) || waiting(x.state) ? c : T->dim);
@@ -611,7 +624,7 @@ void drawSessions(const Model &m) {
     }
     if (top > 0) gTri(320 - X0 - 6, y0 - 1, true, T->dim);
     if (top + ROWS < rowsTotal) gTri(320 - X0 - 6, y0 + ROWS * 16 - 6, false, T->dim);
-    hintLine(m, "4/8 move  7 show  1-3 jump  5 back");
+    hintLine(m, "knob move  7 show  1-3 jump  5 back");
 }
 
 // "+2  project 4:59": requests waiting behind this one, the project and the
@@ -732,10 +745,10 @@ void drawDialog(Model &m) {
 
     char hint[64];
     const char *esc = escHint(sc);
-    if (sc.cursor < 0) snprintf(hint, sizeof(hint), "4/8 scroll  7 back to the options%s", esc);
-    else if (multi) snprintf(hint, sizeof(hint), "1-3 tick  4/8 move  7 tick/submit%s", esc);
-    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  4 read all%s", esc);
-    else snprintf(hint, sizeof(hint), "1-3 pick  4/8 move  7 select%s", esc);
+    if (sc.cursor < 0) snprintf(hint, sizeof(hint), "knob scroll  7 back to the options%s", esc);
+    else if (multi) snprintf(hint, sizeof(hint), "1-3 tick  knob move  7 tick/submit%s", esc);
+    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  knob up: read all%s", esc);
+    else snprintf(hint, sizeof(hint), "1-3 pick  knob move  7 select%s", esc);
     hintLine(m, hint);
 }
 
@@ -776,18 +789,15 @@ void drawPromptScreen(Model &m) {
         char num[5];
         snprintf(num, sizeof(num), "%d.", r + 1);
         text(MONO, X0 + 2 * MONO.cw, y, num, on ? T->claude : T->dim);
-        int16_t end = fit(MONO, X0 + 5 * MONO.cw, y, 18, sc.items[r], on ? T->claude : T->text);
-        int16_t nx = end + 2 * SMALL.cw;
-        if (sc.notes[r][0] && nx < 320 - X0 - 4 * SMALL.cw)
-            fit(SMALL, nx, y + 3, (320 - X0 - nx) / SMALL.cw, sc.notes[r], T->dim);
+        fit(MONO, X0 + 5 * MONO.cw, y, 30, sc.items[r], on ? T->claude : T->text);
     }
     if (top > 0) gTri(320 - X0 - 6, listY + 2, true, T->dim);
     if (top + rows < sc.nItems) gTri(320 - X0 - 6, listY + rows * MONO.line - 7, false, T->dim);
     const char *esc = escHint(sc);
     char hint[64];
-    if (focus) snprintf(hint, sizeof(hint), "4/8 scroll  7 back to the options%s", esc);
-    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  4 read back%s", esc);
-    else snprintf(hint, sizeof(hint), "1-3 pick  4/8 move  7 select%s", esc);
+    if (focus) snprintf(hint, sizeof(hint), "knob scroll  7 back to the options%s", esc);
+    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  knob up: read back%s", esc);
+    else snprintf(hint, sizeof(hint), "1-3 pick  knob move  7 select%s", esc);
     hintLine(m, hint);
 }
 

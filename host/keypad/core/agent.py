@@ -11,22 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import config, proto
+from ..proto import Why
 from .ctx import Ctx
-from .dialogs import Dialog, DialogError, Dialogs
+from .dialogs import Dialogs
 from .hooks import Hooks
-from .sessions import (
-    BUSY_STATES,
-    CONTINUING,
-    DONE,
-    IDLE,
-    THINKING,
-    TOOL,
-    WORKING,
-    Sessions,
-    short,
-    wire,
-)
-from .text import clip, first_line, tool_verb
+from .sessions import BUSY_STATES, CONTINUING, IDLE, WORKING, Sessions, short, wire
+from .shortcuts import Shortcuts
+from .stats import Stats
+from .text import clip, tool_verb
 from .transcript import CLAUDE, INTERRUPT, RESULT, USER, Tail
 from .transcript import TOOL as T_TOOL
 
@@ -34,11 +26,10 @@ if TYPE_CHECKING:
     from ..device.hub import Conn, Hub
 
 
-SHORTCUT_TTL = 900  # s a queued saved prompt waits for the session's next hook
 POLL_EVERY = 0.3  # s between looks at the sessions' transcripts
 DISCOVER_WITHIN = 900  # s: transcripts touched this recently belong to sessions already running when the agent starts
 # states in which new transcript lines may change the shown state (not while a request waits on someone)
-FOLLOWABLE = {IDLE, DONE, THINKING, WORKING, TOOL, CONTINUING}
+FOLLOWABLE = {IDLE, WORKING, CONTINUING}
 
 
 class Agent:
@@ -50,21 +41,25 @@ class Agent:
         self.sessions = Sessions()
         self._cfg_lock = threading.Lock()
         self._cfg = cfg
-        self._rev = 1  # bumped on every change of the settings (a client's edit must start from the current one)
         self._paused = False
         self._dirty = threading.Event()
-        self._pend_lock = threading.Lock()
-        self._pending: dict[str, tuple[config.Shortcut, float]] = {}
-        self.dialogs = Dialogs(self, log)
+        self.stats = Stats()
+        self.dialogs = Dialogs(self, log, self.stats)
+        self.shortcuts = Shortcuts(self)
         self._hooks = Hooks(self)
         self.dialogs.on_change = self.mark_dirty
+        self.sessions.on_change = self.mark_dirty
         self._tails: dict[str, Tail] = {}
         self._unreadable: set[str] = set()  # sessions whose transcript could not be understood (logged once)
         self._tail_lock = threading.Lock()
 
     def hook(self, ctx: Ctx, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Claude Code's hook decision; {} means none."""
-        return self._hooks.hook(ctx, event, payload)
+        t0 = time.monotonic()
+        try:
+            return self._hooks.hook(ctx, event, payload)
+        finally:
+            self.stats.hook(event, time.monotonic() - t0)
 
     # ---- settings ----
 
@@ -72,19 +67,10 @@ class Agent:
         with self._cfg_lock:
             return self._cfg.copy()
 
-    def config_rev(self) -> int:
+    def set_config(self, c: config.Config) -> None:
         with self._cfg_lock:
-            return self._rev
-
-    def set_config(self, c: config.Config, rev: int | None = None) -> bool:
-        """Replaces the settings. With rev, only when nobody changed them since that revision."""
-        with self._cfg_lock:
-            if rev is not None and rev != self._rev:
-                return False
             self._cfg = c.copy()
-            self._rev += 1
         self.mark_dirty()
-        return True
 
     def away(self, seconds: int) -> bool:
         """Whether nobody has used the PC for `seconds` (true when unknown)."""
@@ -193,9 +179,9 @@ class Agent:
         if last.kind == INTERRUPT:
             self.sessions.touch(sid, IDLE, "Interrupted", "")
         elif last.kind == USER:
-            self.sessions.touch(sid, THINKING, "Working", clip(last.text, 160))
+            self.sessions.touch(sid, WORKING, "Working", clip(last.text, 160))
         elif last.kind == T_TOOL:
-            self.sessions.touch(sid, TOOL, tool_verb(last.tool), last.detail)
+            self.sessions.touch(sid, WORKING, tool_verb(last.tool), last.detail)
         elif last.kind in (CLAUDE, RESULT) and s.state in BUSY_STATES:
             self.sessions.touch(sid, WORKING, "Working", "")
 
@@ -219,9 +205,14 @@ class Agent:
             if c.live:
                 c.send({"t": "toast", "text": proto.fit(clip(text, 60), proto.TOAST_TEXT), "level": level, "ms": ms})
 
+    def notify(self, text: str) -> None:
+        """Lights up the keypads with a short message (Claude finished and nothing was asked on them)."""
+        if self.config().behavior.notify_when_finished and not self.paused():
+            self.toast(text, "ok", 4000)
+
     def shown_id(self) -> str:
         """The session the keypads show: the one a request on screen came
-        from, else the pinned or latest one."""
+        from, else the one chosen on the keypad or the latest."""
         if sid := self.dialogs.active_sid():
             return sid
         cur = self.sessions.current()
@@ -238,109 +229,45 @@ class Agent:
             sel = shown
             if not any(s["id"] == sel for s in lst):
                 sel = lst[0]["id"] if lst else ""
-            st: dict[str, Any] = {"t": "status", "sessions": lst, "sel": sel, "pinned": self.sessions.pinned(),
-                                  "queue": self.dialogs.queued(), "paused": self.paused(), "menu": menu}
+            st: dict[str, Any] = {"t": "status", "sessions": lst, "sel": sel,
+                                  "queue": self.dialogs.queued(), "paused": self.paused(), "menu": menu,
+                                  "quick": self.shortcuts.quick() if menu else [],
+                                  "queued": self.shortcuts.queued(self.shown_id())}
             c.send(st)
-            self.push_feed(c, sel, next((x.log for x in live if short(x.id) == sel), []))
-
-    def push_feed(self, c: Conn, sel: str, log: list[dict[str, str]]) -> None:
-        """Gives a keypad the transcript of the selected session, when it changed."""
-        # The oldest entries go until the text fits the keypad's buffer and the message the protocol limit.
-        while log and sum(len(x["t"].encode()) + 1 for x in log) > proto.LOG_POOL:
-            log = log[1:]
-        if c.feed == (sel, log):
-            return
-        while True:
-            msg = {"t": "feed", "sid": sel, "full": log}
-            try:
-                proto.encode(msg)
-                break
-            except proto.InvalidMessage:
-                if not log:
-                    return
-                log = log[1:]
-        if c.send(msg):
-            c.feed = (sel, log)
+            c.push_feed(sel, next((x.log for x in live if short(x.id) == sel), []))
 
     # ---- device events ----
 
     def connected(self, c: Conn) -> None:
         c.feed = None  # a (re)connected keypad has no transcript yet
         if c.live:  # a cable used for setup shows nothing
+            self.stats.count("keypad_connects")
             self.push_status()
             self.dialogs.reshow(c.id)
 
     def disconnected(self, c: Conn) -> None:
+        if c.live:
+            self.stats.count("keypad_disconnects")
         self.mark_dirty()
 
     def message(self, c: Conn, m: dict[str, Any]) -> None:
         t = m["t"]
         if t == "press":
             if m.get("id") == "status":
+                sid = self.shown_id()
                 if m.get("act") == "menu":
-                    threading.Thread(target=self.shortcut_menu, daemon=True).start()
+                    threading.Thread(target=self.shortcuts.menu, daemon=True).start()
+                elif m.get("act") == "unqueue" and sid:
+                    self.shortcuts.cancel(sid)
+                elif m.get("act") == "quick" and isinstance(m.get("idx"), int) and sid:
+                    threading.Thread(target=self.shortcuts.queue, args=(m["idx"], sid), daemon=True).start()
                 return
             if not self.dialogs.press(c.id, m):
                 # stale screen on that keypad: send it back to the status screen
-                c.send({"t": "close", "id": m.get("id", ""), "why": "stale"})
+                c.send({"t": "close", "id": m.get("id", ""), "why": Why.STALE})
         elif t == "session":
-            if m.get("act") == "follow":
-                self.sessions.follow()
-            else:
-                self.sessions.select(m.get("sid", ""))
+            self.sessions.select(m.get("sid", ""))
             self.mark_dirty()
-
-    # ---- shortcuts ----
-
-    def shortcut_labels(self) -> list[str]:
-        return [clip(s.label, 28) for s in self.config().shortcuts]
-
-    def shortcut_screen(self, title: str, items: list[str], notes: list[str], esc: str) -> dict[str, Any]:
-        """The prompt box with saved prompts as suggestions (prompt template)."""
-        cfg = self.config()
-        return {"tpl": "prompt", "title": title, "items": items + self.shortcut_labels(),
-                "notes": notes + [clip(first_line(sc.prompt), 46) for sc in cfg.shortcuts], "esc": esc}
-
-    def shortcut_menu(self) -> None:
-        """Enter on the status screen: send a saved prompt to the shown session."""
-        cur = self.sessions.get(self.shown_id())
-        if not cur:
-            return
-        ctx = Ctx().with_timeout(30)
-
-        def fn(d: Dialog) -> None:
-            p = d.show(ctx, {**self.shortcut_screen("Send to Claude", [], [], "back"), "project": cur.project})
-            if p.get("act") == "pick" and isinstance(p.get("idx"), int):
-                threading.Thread(target=self.queue_shortcut, args=(p["idx"], cur.id), daemon=True).start()
-
-        try:
-            self.dialogs.run(ctx, cur.project, "menu", fn, sid=cur.id)
-        except DialogError:
-            pass
-
-    def queue_shortcut(self, idx: int, sid: str) -> None:
-        """Queues saved prompt idx for a session. It is delivered on the
-        session's next hook: the next tool call while Claude works, its stop,
-        or your next prompt."""
-        cfg = self.config()
-        if not 0 <= idx < len(cfg.shortcuts):
-            return
-        sc = cfg.shortcuts[idx]
-        s = self.sessions.get(sid)
-        if not s:
-            return
-        with self._pend_lock:
-            self._pending[sid] = (sc, time.monotonic())
-        self.log.info("shortcut queued session=%s project=%s label=%s", short(sid), s.project, sc.label)
-        where = "" if self.sessions.is_busy(sid) else " (with your next prompt)"
-        self.toast(f"Queued for {s.project}: {sc.label}{where}", "info", 2500)
-
-    def take_pending(self, sid: str) -> config.Shortcut | None:
-        with self._pend_lock:
-            p = self._pending.pop(sid, None)
-        if not p or time.monotonic() - p[1] > SHORTCUT_TTL:
-            return None
-        return p[0]
 
     # ---- screen builders ----
 
@@ -372,6 +299,6 @@ class Agent:
             "queue": self.dialogs.queued(), "keypads": [c.info() for c in conns],
             "devices": [d.view() for d in self.store.devices()], "problems": dict(self.hub.problems) if self.hub else {},
             "sessions": sessions,
-            "presence": self.presence_view(), "current": self.shown_id(), "pinned": self.sessions.pinned(),
-            "shortcuts": self.shortcut_labels(),
+            "presence": self.presence_view(), "current": self.shown_id(),
+            "shortcuts": self.shortcuts.labels(), "stats": self.stats.view(),
         }

@@ -2,7 +2,7 @@
 prints a JSON object and exits 0. `{}` means "no decision".
 
 Standard library only (plus keypad.ipc and keypad.dirs): it starts on every
-prompt, permission, question and stop, so it must start quickly."""
+prompt, tool call, permission, question and stop, so it must start quickly."""
 
 from __future__ import annotations
 
@@ -81,9 +81,10 @@ def run_hook(args: list[str]) -> int:
             if isinstance(payload, dict):
                 from . import ipc
 
-                req = {"event": event, "payload": slim(payload)}
                 waits = event in BLOCKING or (event == "PreToolUse" and payload.get("tool_name") == "AskUserQuestion")
                 timeout = blocking_timeout() if waits else QUICK_TIMEOUT
+                # "wait": how long this hook stays: the agent never keeps a dialog open past it
+                req = {"event": event, "payload": slim(payload), "wait": timeout}
                 reply = ipc.request("POST", "/hook", req, timeout=timeout)
                 if isinstance(reply, dict):
                     out = reply

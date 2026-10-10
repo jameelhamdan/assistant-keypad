@@ -72,6 +72,12 @@ def _plist(label: str, binary: str, arg: str) -> str:
 """
 
 
+def _mac_write(binary: str) -> None:
+    p = _plist_path(LABEL)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_plist(LABEL, binary, "tray --quiet"))
+
+
 def _disabled(label: str) -> bool:
     """launchd's persistent "disabled" override for label."""
     for line in _run("launchctl", "print-disabled", _domain()).stdout.splitlines():
@@ -152,11 +158,9 @@ def install(binary: str) -> None:
     if sys.platform == "darwin":
         config.log_dir().mkdir(parents=True, exist_ok=True)
         _run("launchctl", "enable", f"{_domain()}/{LABEL}")
-        p = _plist_path(LABEL)
-        p.parent.mkdir(parents=True, exist_ok=True)
         _run("launchctl", "bootout", f"{_domain()}/{LABEL}")
-        p.write_text(_plist(LABEL, binary, "tray --quiet"))
-        r = _run("launchctl", "bootstrap", _domain(), str(p))
+        _mac_write(binary)
+        r = _run("launchctl", "bootstrap", _domain(), str(_plist_path(LABEL)))
         if r.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap {LABEL}: {r.stdout}{r.stderr}".strip())
     elif sys.platform == "win32":
@@ -184,9 +188,7 @@ def set_login_enabled(binary: str, on: bool) -> None:
     binary = gui_path(binary)
     if sys.platform == "darwin":
         if on:
-            p = _plist_path(LABEL)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(_plist(LABEL, binary, "tray --quiet"))  # launchd loads it at the next login
+            _mac_write(binary)  # launchd loads it at the next login
             _run("launchctl", "enable", f"{_domain()}/{LABEL}")
         elif (r := _run("launchctl", "disable", f"{_domain()}/{LABEL}")).returncode != 0:
             raise RuntimeError(f"launchctl disable {LABEL}: {r.stderr}".strip())

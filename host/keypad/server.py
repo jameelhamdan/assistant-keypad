@@ -9,9 +9,10 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from . import claudecfg, config, firmware, proto
+from . import config, firmware, proto
 from .core.agent import Agent
 from .core.ctx import Ctx
+from .hook import GRACE
 
 
 class Fail(Exception):
@@ -23,23 +24,22 @@ class Server:
         self.a, self.bin, self.log, self.quit = agent, binary, log, quit_
         self._ota_lock = threading.Lock()
         self._ota: dict[str, int] = {}
-        self._pair_page = None
         self._routes: list[tuple[str, re.Pattern, Callable]] = []
         r = self._route
         r("POST", "/hook", self.hook)
-        r("GET", "/status", lambda b, **_: self.a.snapshot())
+        r("GET", "/status", self.status)
         r("POST", "/pause", self.pause)
         r("POST", "/quit", self.do_quit)
         r("POST", "/shortcut", self.shortcut)
         r("POST", "/session", self.session)
-        r("GET", "/config", lambda b, **_: {**self.a.config().to_dict(), "rev": self.a.config_rev()})
+        r("GET", "/config", lambda b, **_: self.a.config().to_dict())
         r("PUT", "/config", self.put_config)
         r("PATCH", "/devices/(?P<id>[^/]+)", self.patch_device)
-        r("GET", "/pair-url", self.pair_url)
+        r("POST", "/pairing", self.pairing)
         r("POST", "/devices/(?P<id>[^/]+)/provision", self.provision)
         r("POST", "/devices/(?P<id>[^/]+)/unpair", self.unpair)
+        r("POST", "/devices/(?P<id>[^/]+)/take", self.take)
         r("POST", "/devices/(?P<id>[^/]+)/update", self.update)
-        r("GET", "/devices/(?P<id>[^/]+)/update", self.update_status)
         r("GET", "/firmware", lambda b, **_: {"bundled": firmware.image() is not None, "version": firmware.version()})
 
     @property
@@ -65,10 +65,18 @@ class Server:
 
     def hook(self, b: dict, gone: Callable[[], bool], **_) -> dict:
         ctx = Ctx(cancelled=gone)  # the hook shim hung up: Claude Code moved on
+        wait = b.get("wait")
+        if isinstance(wait, int | float) and wait > GRACE:  # the shim's own deadline, less its grace
+            ctx = ctx.with_timeout(wait - GRACE)
         payload = b.get("payload") if isinstance(b.get("payload"), dict) else {}
         return self.a.hook(ctx, str(b.get("event", "")), payload)
 
     # ---- control ----
+
+    def status(self, b: dict, **_) -> dict:
+        with self._ota_lock:
+            updates = dict(self._ota)  # firmware updates by keypad id: 0-99 running, 100 done, -1 failed
+        return {**self.a.snapshot(), "updates": updates}
 
     def do_quit(self, b: dict, **_) -> dict:
         threading.Timer(0.1, self.quit).start()
@@ -83,13 +91,11 @@ class Server:
         if not sid:
             cur = self.a.sessions.current()
             sid = cur.id if cur else ""
-        threading.Thread(target=self.a.queue_shortcut, args=(int(b.get("index", -1)), sid), daemon=True).start()
+        threading.Thread(target=self.a.shortcuts.queue, args=(int(b.get("index", -1)), sid), daemon=True).start()
         return ok()
 
     def session(self, b: dict, **_) -> dict:
-        if b.get("follow"):
-            self.a.sessions.follow()
-        elif not self.a.sessions.select(str(b.get("id", ""))):
+        if not self.a.sessions.select(str(b.get("id", ""))):
             raise Fail("no such session")
         self.a.mark_dirty()
         return ok()
@@ -97,21 +103,11 @@ class Server:
     def put_config(self, b: dict, **_) -> dict:
         if not b:
             raise Fail("empty settings")
-        prev = self.a.config()
         c = config.Config.from_dict(b)
         c.validate()  # clamps in place
-        if not self.a.set_config(c, b.get("rev") if isinstance(b.get("rev"), int) else None):
-            raise Fail("the settings changed elsewhere meanwhile: try again")
+        self.a.set_config(c)
         config.save(c)
-        # keep Claude Code's own continue cap and hook timeout in step (only when they changed:
-        # every install backs up settings.json)
-        if ((c.behavior.max_continues, c.behavior.timeout) != (prev.behavior.max_continues, prev.behavior.timeout)
-                and claudecfg.check(self.bin).hooks > 0):
-            try:
-                claudecfg.install(self.bin, c.behavior)
-            except (OSError, RuntimeError) as e:
-                self.log.warning("updating Claude Code's hook settings failed: %s", e)
-        return {**c.to_dict(), "rev": self.a.config_rev()}
+        return c.to_dict()
 
     # ---- keypads ----
 
@@ -132,20 +128,22 @@ class Server:
         self.hub.unpair(id)
         return ok()
 
-    def pair_url(self, b: dict, **_) -> dict:
-        """The address of the local pairing page (also opens the USB port for a while)."""
-        from .pairpage import PairPage
+    def take(self, b: dict, id: str, **_) -> dict:
+        if self.a.store.device(id) is None:
+            raise Fail("unknown keypad")
+        self.hub.take(id)
+        return ok()
 
-        self.hub.open_pairing()
-        if self._pair_page is None:
-            self._pair_page = PairPage(self.a, self.hub)
-        return {"url": self._pair_page.url()}
+    def pairing(self, b: dict, **_) -> dict:
+        """Opens the USB ports for a few minutes: a keypad plugged in is found and can be set up."""
+        self.hub.usb.open()
+        return ok()
 
     def provision(self, b: dict, id: str, **_) -> dict:
         ssid = str(b.get("ssid", "")).strip()
         if not ssid:
             raise Fail("enter the Wi-Fi network name")
-        self.hub.provision(id, ssid, str(b.get("pass", "")), proto.fit(str(b.get("name", "")), proto.DEVICE_NAME))
+        self.hub.usb.provision(id, ssid, str(b.get("pass", "")), proto.fit(str(b.get("name", "")), proto.DEVICE_NAME))
         return ok()
 
     def update(self, b: dict, id: str, **_) -> dict:
@@ -163,7 +161,10 @@ class Server:
 
         def run() -> None:
             try:
+                old = self.hub.get(id)
                 self.hub.update_firmware(id, image, progress)
+                if (why := self.check_updated(id, old)) is not None:
+                    raise RuntimeError(why)
                 progress(100)
             except Exception as e:
                 self.log.warning("firmware update failed id=%s: %s", id, e)
@@ -172,10 +173,19 @@ class Server:
         threading.Thread(target=run, daemon=True).start()
         return ok()
 
-    def update_status(self, b: dict, id: str, **_) -> dict:
-        with self._ota_lock:
-            p = self._ota.get(id)
-        return {"progress": p if p is not None else 0, "running": p is not None and 0 <= p < 100}
+
+    def check_updated(self, id: str, old) -> str | None:
+        """After an update the keypad restarts: why it did not come back with the new firmware, or None."""
+        c = self.hub.wait_reconnect(id, old, UPDATE_RECONNECT)
+        if c is None:
+            return f"the keypad did not reconnect within {UPDATE_RECONNECT:.0f} s of the update"
+        want, got = firmware.version(), c.hello.get("fw", "")
+        if want != "dev" and got != want:
+            return f"the keypad came back with firmware {got!r}, not {want!r}: the update was rolled back"
+        return None
+
+
+UPDATE_RECONNECT = 60.0  # s a keypad gets to restart and reconnect after an update
 
 
 def ok() -> dict:

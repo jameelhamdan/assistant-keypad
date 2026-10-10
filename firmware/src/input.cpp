@@ -111,8 +111,3 @@ int32_t inputTakeSteps() {
     encTaken = s;
     return d;
 }
-
-bool inputHeld(uint8_t key, uint32_t forMs) {
-    const Key &k = keys[slotOf(key)];
-    return k.stable && millis() - k.pressStart >= forMs;
-}

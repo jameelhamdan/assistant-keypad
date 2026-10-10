@@ -5,14 +5,19 @@ from __future__ import annotations
 
 import logging
 import queue
+import secrets
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
 from .. import proto
+from ..proto import Why
 from .ctx import Ctx
+from .stats import Stats
 
 TICK = 0.25
+RECONNECT_GRACE = 20.0  # s a dialog waits for a keypad that dropped to come back (its screen is shown again)
 
 
 class DialogError(Exception):
@@ -81,6 +86,7 @@ class Dialog:
         for dev in targets:
             m.disp.send_to(dev, s)
 
+        lost = 0.0  # when the last keypad dropped (monotonic), 0 while one is connected
         while True:
             wait = TICK if (rem := ctx.remaining()) is None else max(0.0, min(TICK, rem))
             try:
@@ -89,44 +95,53 @@ class Dialog:
                 pass
             else:
                 if press.get("id") != s["id"]:
+                    m.stats.count("press_stale")
                     continue  # a late press for an earlier screen of this dialog
                 if press.get("act") in ("pc", "done"):  # "done" on the finished screen: stop there
-                    self.close_screen("pc", dev)
+                    self.close_screen(Why.PC, dev)
                     raise DialogError("handed back to the PC")
-                self.close_screen("answered", dev)
+                self.close_screen(Why.ANSWERED, dev)
                 return press
             if self.cancelled:
-                self.close_screen("pc", "")
+                self.close_screen(Why.PC, "")
                 raise DialogError(self.cancelled)
             if ctx.done():
-                self.close_screen("timeout", "")
+                self.close_screen(Why.TIMEOUT, "")
                 raise DialogError("no answer on the keypad")
-            if not m.disp.targets():
-                self.close_screen("disconnected", "")
+            if m.disp.targets():
+                lost = 0.0
+            elif not lost:
+                lost = time.monotonic()
+            elif time.monotonic() - lost > RECONNECT_GRACE:
+                self.close_screen(Why.DISCONNECTED, "")
                 raise no_keypad()
 
-    def close_screen(self, why: str, except_dev: str) -> None:
+    def close_screen(self, why: Why, except_dev: str) -> None:
         """Tells keypads (except the one that answered, which already locked
         itself) that the current screen is gone."""
         with self._lock:
             if self.screen is None:
                 return
             sid, targets = self.screen["id"], list(self.targets)
-            if why == "done":
+            if why == Why.DONE:
                 self.screen = None
         for dev in targets:
-            if dev != except_dev or why == "done":
+            if dev != except_dev or why == Why.DONE:
                 self.m.disp.send_to(dev, {"t": "close", "id": sid, "why": why})
 
 
 class Dialogs:
-    def __init__(self, disp: Display, log: logging.Logger):
+    def __init__(self, disp: Display, log: logging.Logger, stats: Stats | None = None):
         self.disp, self.log = disp, log
+        self.stats = stats or Stats()
         self.on_change: Callable[[], None] = lambda: None
         self._lock = threading.Lock()
         self._queue: list[Dialog] = []
         self._active: Dialog | None = None
         self._seq = 0
+        # Screen ids must not repeat across agent restarts: a keypad that sees the id of its last answer again
+        # takes it for a resend and repeats that answer instead of showing the new screen.
+        self._run = secrets.token_hex(2)
 
     def queued(self) -> int:
         """How many dialogs wait behind the active one."""
@@ -159,7 +174,7 @@ class Dialogs:
             raise no_keypad()
         with self._lock:
             self._seq += 1
-            d = Dialog(self, f"{kind[0]}{self._seq}", project, sid)
+            d = Dialog(self, f"{kind[0]}{self._run}.{self._seq}", project, sid)
             self._queue.append(d)
             self._promote()
         self.on_change()
@@ -191,25 +206,32 @@ class Dialogs:
                 self._active = None
                 self._promote()
         if mine:
-            d.close_screen("done", "")
+            d.close_screen(Why.DONE, "")
         self.on_change()
 
     def press(self, dev: str, msg: dict[str, Any]) -> bool:
-        """Routes a key press from a keypad; False if it answers nothing."""
+        """Routes a key press from a keypad; False if it is for a screen that is gone (the keypad
+        is sent back to its status screen). A press the current screen did not offer is ignored
+        and the screen stays: True."""
         with self._lock:
             d = self._active
         if d is None:
+            self.stats.count("press_stale")
             return False
         with d._lock:  # queued under the lock: show() cannot swap the screen in between
             ok = d.screen is not None and d.screen["id"] == msg.get("id") and dev in d.targets
             if ok and not press_matches(d.screen, msg):
+                self.stats.count("press_rejected")
                 self.log.warning("ignored a press the screen did not offer: %s from %s", msg, dev)
-                return False
+                return True
             if ok:
                 try:
                     d.press.put_nowait((msg, dev))
                 except queue.Full:
-                    pass
+                    self.stats.count("press_dropped")
+                    self.log.warning("dropped a press: too many waiting for screen %s (from %s)", msg.get("id"), dev)
+        if not ok:
+            self.stats.count("press_stale")
         return ok
 
     def reshow(self, dev: str) -> bool:

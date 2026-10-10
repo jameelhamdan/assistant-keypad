@@ -7,6 +7,7 @@ device -> host messages are validated by decode().
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 from typing import Any
 
 VERSION = 3
@@ -18,11 +19,35 @@ MAX_HOST_MSG = 16000  # the keypad takes 16 KB (whole Claude messages)
 MAX_DEVICE_MSG = 1024
 MAX_ITEMS = 32  # options on one screen; the cursor scrolls through them
 
-# The keypad's fixed layout (firmware/include/config.h):  1 2 3 [4 up]
-#                                                         [5 esc] [6 sessions] [7 enter] [8 down]
+# The keypad's fixed layout (firmware/include/config.h):  1 2 3 [4 prompt 4]
+#                                                         [5 esc] [6 sessions] [7 enter] [8 prompt 5]; the knob moves/scrolls
 KEY_ESC, KEY_ENTER = 5, 7  # the knob press is sent as Enter (7): the keypad never sends key 0
 ESC_KEYS = (KEY_ESC,)
 DIRECT_PICKS = 3  # keys 1-3 pick options 1-3
+MAX_QUICK = 5  # saved prompts on the status screen: keys 1, 2, 3, 4 and 8
+
+
+
+class Why(StrEnum):
+    """close.why: why a screen went away."""
+
+    PC = "pc"  # answered or handed back at the PC
+    DONE = "done"  # the dialog is over
+    ANSWERED = "answered"  # a keypad answered (the others are told)
+    TIMEOUT = "timeout"
+    DISCONNECTED = "disconnected"
+    STALE = "stale"  # a press for a screen the host no longer has
+
+
+class Refusal(StrEnum):
+    """no.code: why a keypad refused a Wi-Fi connection (no.why is the same in words)."""
+
+    BAD_HELLO = "bad_hello"  # not our protocol version
+    NOT_PAIRED = "not_paired"
+    OTHER_HOST = "other_host"  # paired, but not with this computer
+    BUSY = "busy"  # another computer holds the keypad (no.host names it)
+    BAD_NONCE = "bad_nonce"
+
 
 DEVICE_TYPES = {"hello", "pong", "press", "session", "provisioned", "ota"}
 
@@ -32,7 +57,7 @@ DEVICE_TYPES = {"hello", "pong", "press", "session", "provisioned", "ota"}
 SESSION_PROJECT, SESSION_NAME, SESSION_TITLE, SESSION_DETAIL, SESSION_MODE = 39, 39, 63, 239, 23
 LOG_TEXT, LOG_USER_TEXT, LOG_CLAUDE_TEXT = 203, 2000, 8000  # per transcript entry, by kind
 LOG_POOL = 12000  # all transcript text together (the keypad's buffer is 12288 bytes)
-SCREEN_TITLE, SCREEN_PROJECT, SCREEN_BODY, SCREEN_Q, SCREEN_ITEM, SCREEN_NOTE = 127, 39, 1399, 127, 63, 47
+SCREEN_TITLE, SCREEN_PROJECT, SCREEN_BODY, SCREEN_Q, SCREEN_ITEM = 127, 39, 1399, 127, 63
 TOAST_TEXT, DEVICE_NAME, HOST_NAME = 127, 24, 31
 
 
@@ -51,9 +76,8 @@ def fit_screen(s: dict[str, Any]) -> dict[str, Any]:
     for k, n in (("title", SCREEN_TITLE), ("project", SCREEN_PROJECT), ("body", SCREEN_BODY), ("q", SCREEN_Q)):
         if isinstance(s.get(k), str):
             s[k] = fit(s[k], n)
-    for k, n in (("items", SCREEN_ITEM), ("notes", SCREEN_NOTE)):
-        if isinstance(s.get(k), list):
-            s[k] = [fit(str(x), n) for x in s[k][:MAX_ITEMS]]
+    if isinstance(s.get("items"), list):
+        s["items"] = [fit(str(x), SCREEN_ITEM) for x in s["items"][:MAX_ITEMS]]
     return s
 
 

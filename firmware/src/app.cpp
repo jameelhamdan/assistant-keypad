@@ -155,10 +155,15 @@ void applyStatus(JsonDocument &doc) {
         x.startedAt = now - (uint32_t)(s["since"] | 0) * 1000u;
     }
     strlcpy(st.sel, doc["sel"] | "", sizeof(st.sel));
-    st.pinned = doc["pinned"] | false;
     st.queue = doc["queue"] | 0;
     st.paused = doc["paused"] | false;
     st.menu = doc["menu"] | false;
+    copyText(st.queued, sizeof(st.queued), doc["queued"] | "");
+    st.nQuick = 0;
+    for (const char *q : doc["quick"].as<JsonArrayConst>()) {
+        if (st.nQuick >= MAX_QUICK) break;
+        copyText(st.quick[st.nQuick++], sizeof(st.quick[0]), q);
+    }
     model.view = 0;
     for (uint8_t i = 0; i < st.n; i++) if (!strcmp(st.s[i].id, st.sel)) model.view = i;
     if (strcmp(prevSel, st.sel) != 0) {   // another session: its transcript arrives as a new feed
@@ -166,7 +171,7 @@ void applyStatus(JsonDocument &doc) {
         st.nLog = 0;
         st.logVer++;
     }
-    if (model.pick > st.n) model.pick = st.n;
+    if (model.pick >= st.n) model.pick = st.n ? st.n - 1 : 0;
 }
 
 // ---- the transcript feed ----------------------------------------------------------------
@@ -221,11 +226,9 @@ void showScreen(JsonDocument &doc) {
     copyText(sc.q, sizeof(sc.q), doc["q"] | "");
     sc.diff = doc["diff"] | false;
     sc.nItems = 0;
-    JsonArrayConst notes = doc["notes"].as<JsonArrayConst>();
     for (const char *it : doc["items"].as<JsonArrayConst>()) {
         if (sc.nItems >= MAX_ITEMS) break;
         copyText(sc.items[sc.nItems], sizeof(sc.items[0]), it);
-        copyText(sc.notes[sc.nItems], sizeof(sc.notes[0]), notes[sc.nItems] | "");
         sc.picked[sc.nItems++] = false;
     }
     strlcpy(sc.esc, doc["esc"] | "", sizeof(sc.esc));
@@ -250,8 +253,8 @@ void provision(JsonDocument &doc, Src src) {
     const char *key = doc["key"] | "";
     const char *host = doc["host"] | "";
     const char *ssid = doc["ssid"] | "";
-    uint8_t newKey[sizeof(stored.key)];
-    bool ok = host[0] && strlen(host) < sizeof(stored.host) && ssid[0] && strlen(ssid) < sizeof(stored.ssid) &&
+    uint8_t newKey[sizeof(HostKey::key)];
+    bool ok = host[0] && strlen(host) < sizeof(HostKey::id) && ssid[0] && strlen(ssid) < sizeof(stored.ssid) &&
               hexDecode(key, newKey, sizeof(newKey));
     if (!ok) {
         r["ok"] = false;
@@ -259,12 +262,15 @@ void provision(JsonDocument &doc, Src src) {
         sendTo(src, r);
         return;
     }
-    memcpy(stored.key, newKey, sizeof(newKey));
+    if (!storeSetHost(stored, host, newKey)) {   // this computer is added next to the others
+        r["ok"] = false;
+        r["err"] = "paired with 3 other computers: forget one first";
+        sendTo(src, r);
+        return;
+    }
     strlcpy(stored.ssid, ssid, sizeof(stored.ssid));
     strlcpy(stored.pass, doc["pass"] | "", sizeof(stored.pass));
-    strlcpy(stored.host, host, sizeof(stored.host));
     if (const char *n = doc["name"]; n && n[0]) strlcpy(stored.name, n, sizeof(stored.name));
-    stored.paired = true;
     storeSave(stored);
     model.paired = true;
     copyText(model.name, sizeof(model.name), stored.name);
@@ -275,12 +281,15 @@ void provision(JsonDocument &doc, Src src) {
     appToast("Paired. Joining Wi-Fi...", Tone::Ok, 3000);
 }
 
-void unpair() {
-    stored.paired = false;
-    stored.host[0] = stored.ssid[0] = stored.pass[0] = '\0';
-    memset(stored.key, 0, sizeof(stored.key));
+// From the cable: forget every computer and the Wi-Fi. From a computer over Wi-Fi: forget that one only.
+void unpair(bool fromHost) {
+    char who[sizeof(HostKey::id)];
+    strlcpy(who, fromHost ? linkHost() : "", sizeof(who));
+    if (fromHost && !who[0]) return;   // no session to name: never mistaken for "forget everything"
+    storeRemoveHost(stored, who);
+    if (!stored.paired) stored.ssid[0] = stored.pass[0] = '\0';
     storeSave(stored);
-    model.paired = false;
+    model.paired = stored.paired;
     host.greeted = false;
     applyWifiConfig();
     linkConfigure(stored);
@@ -298,13 +307,14 @@ void onMessage(char *json, size_t len, Src src) {
     const char *t = doc["t"] | "";
     if (!t[0]) return;
     bool net = src == Src::Net;
-    if (net) host.lastRx = millis();
+    if (net) model.lastHostAt = host.lastRx = millis();
 
     // The host's hello: it introduces itself, we introduce ourselves. Over USB that is all it does.
     if (!strcmp(t, "hello")) {
         if (net) {
             host.greeted = true;
             copyText(model.host, sizeof(model.host), doc["host"] | "");
+            linkNamePeer(model.host);   // a second computer that finds the keypad busy is told who has it
             if (model.mode == Mode::Waiting || model.mode == Mode::Boot) model.mode = Mode::Status;
             markDirty();
         }
@@ -329,7 +339,7 @@ void onMessage(char *json, size_t len, Src src) {
     }
     // Forgetting works over the cable or from the paired host over Wi-Fi.
     if (!strcmp(t, "unpair")) {
-        if (!net || host.greeted) unpair();
+        if (!net || host.greeted) unpair(net);
         markDirty();
         return;
     }
@@ -356,7 +366,10 @@ void onMessage(char *json, size_t len, Src src) {
     } else if (!strcmp(t, "close")) {
         const char *id = doc["id"] | "";
         if (model.screen.active && !strcmp(id, model.screen.id)) model.screen.active = false;
-        if (!model.screen.active && model.mode == Mode::Screen) model.mode = Mode::Status;
+        if (!model.screen.active && model.mode == Mode::Screen) {
+            model.mode = Mode::Status;
+            model.screenEndedAt = millis();
+        }
     } else if (!strcmp(t, "toast")) {
         const char *lv = doc["level"] | "info";
         appToast(doc["text"] | "", !strcmp(lv, "info") ? Tone::Info : toneOf(lv), doc["ms"] | 2500);
@@ -406,16 +419,17 @@ void answer(uint8_t key, const char *act, int idx, const char *label) {
     strlcpy(lastAnswered, sc.id, sizeof(lastAnswered));
     sendHost(d);
     sc.active = false;   // locked: further presses do nothing until the host moves on
+    model.screenEndedAt = millis();
     strlcpy(model.sent, label, sizeof(model.sent));
     model.sentUntil = millis() + SENT_MS;
     model.mode = Mode::Status;
 }
 
-void sendSession(const char *act, const char *sid) {
+void sendSession(const char *sid) {
     JsonDocument d;
     d["t"] = "session";
-    d["act"] = act;
-    if (sid) d["sid"] = sid;
+    d["act"] = "select";
+    d["sid"] = sid;
     sendHost(d);
 }
 
@@ -491,58 +505,72 @@ void screenKey(uint8_t key) {
 // ---- the status screen and the session picker ----
 
 void openSessions() {
-    model.pick = model.status.pinned ? model.view + 1 : 0;
+    model.pick = model.view;
     model.mode = Mode::Sessions;
 }
 
-void chooseSession(int row) {   // 0 = follow latest, 1..n = that session
+void chooseSession(int row) {   // 0..n-1: that session; it stays shown until a request or a finished turn elsewhere needs you
     StatusModel &st = model.status;
-    if (row < 0 || row > st.n) return;
-    if (row == 0) {
-        sendSession("follow", nullptr);
-    } else {
-        model.view = (int8_t)(row - 1);
+    if (row < 0 || row >= st.n) return;
+    if (row != model.view) {
+        model.view = (int8_t)row;
         st.nLog = 0;   // that transcript belonged to the previous session; the host sends the new one
         st.logVer++;
-        sendSession("select", st.s[row - 1].id);
     }
+    sendSession(st.s[row].id);   // also when it is the one shown: hold it there
     model.logScroll = 0;
     model.mode = Mode::Status;
 }
 
-void sendMenu(uint8_t key) {
+void sendMenu(uint8_t key, const char *act, int idx = -1) {
     JsonDocument d;
     d["t"] = "press";
     d["id"] = "status";
     d["key"] = key;
-    d["act"] = "menu";
+    d["act"] = act;
+    if (idx >= 0) d["idx"] = idx;
     sendHost(d);
 }
+
+void quickKey(uint8_t key);
 
 void statusKey(uint8_t key) {
     if (key == KEY_SESSIONS) {
         openSessions();
     } else if (key == KEY_UP || key == KEY_DOWN) {
         model.logScroll = (int16_t)clampInt(model.logScroll + (key == KEY_UP ? 1 : -1), 0, model.logMax);
-    } else if (key == KEY_ESC) {   // back to live: the newest line of the latest activity
-        model.logScroll = 0;
-        if (model.status.pinned) sendSession("follow", nullptr);
+    } else if (key == KEY_ESC) {   // takes back a queued saved prompt, else back to live: the newest line
+        if (model.status.queued[0]) sendMenu(key, "unqueue");
+        else model.logScroll = 0;
     } else if (key == KEY_ENTER && model.status.menu) {
-        sendMenu(key);
+        sendMenu(key, "menu");
+    } else if (key >= 1 && key <= DIRECT_PICKS) {
+        quickKey(key);
     }
+}
+
+// A saved prompt in one press: keys 1-3, 4 and 8 are prompts 1-5. Not right after a request went away
+// (that press meant "Yes" or "No"), and never on a dialog.
+void quickKey(uint8_t key) {
+    int idx = key <= DIRECT_PICKS ? key - 1 : key == KEY_QUICK_4 ? 3 : 4;
+    if (idx < model.status.nQuick && millis() - model.screenEndedAt > QUICK_GUARD_MS) sendMenu(key, "quick", idx);
 }
 
 void sessionsKey(uint8_t key) {
     if (key == KEY_SESSIONS || key == KEY_ESC) model.mode = Mode::Status;
-    else if (key == KEY_UP || key == KEY_DOWN) model.pick = (int8_t)clampInt(model.pick + (key == KEY_UP ? -1 : 1), 0, model.status.n);
+    else if (key == KEY_UP || key == KEY_DOWN) model.pick = (int8_t)clampInt(model.pick + (key == KEY_UP ? -1 : 1), 0, model.status.n ? model.status.n - 1 : 0);
     else if (key == KEY_ENTER) chooseSession(model.pick);
-    else if (key >= 1 && key <= DIRECT_PICKS && key <= model.status.n) chooseSession(key);
+    else if (key >= 1 && key <= DIRECT_PICKS && key <= model.status.n) chooseSession(key - 1);
 }
 
 void onKey(const KeyEvent &ev) {
     if (ev.action != KeyAction::Press || !ev.clean) return;   // one key at a time (the matrix has no diodes)
     if (wakeOnly()) return;   // the first press on a dim screen only wakes it
     uint8_t key = ev.key == KEY_ENC ? KEY_ENTER : ev.key;   // pressing the knob is Enter
+    if (key == KEY_QUICK_4 || key == KEY_QUICK_5) {   // moving is the knob's job: these two are saved prompts, on the status screen only
+        if (model.mode == Mode::Status) quickKey(key);
+        return;
+    }
     if (model.mode == Mode::Screen && model.screen.active) {
         // Safety: never a press that began before the screen appeared.
         if (ev.pressedAt < model.screen.shownAt + STALE_PRESS_MS) return;
@@ -554,11 +582,21 @@ void onKey(const KeyEvent &ev) {
     }
 }
 
-// The encoder turns like 4 (up) and 8 (down), one step per detent.
+// The knob moves the cursor and scrolls, one step per detent; turned fast, text scrolls faster
+// (a long diff or transcript). A cursor in a list of options never jumps: every detent is one row.
+bool scrolling() { return model.mode == Mode::Status || (model.mode == Mode::Screen && model.screen.active && model.screen.cursor < 0); }
+
 void onEncoder(int32_t steps) {
     if (wakeOnly()) return;
+    static uint32_t lastTurn = 0;
+    uint32_t now = millis();
+    uint32_t gap = now - lastTurn;
+    lastTurn = now;
+    int32_t n = steps < 0 ? -steps : steps;
+    int32_t total = n * (gap < KNOB_FAST_MS ? 4 : gap < KNOB_QUICK_MS ? 2 : 1);   // speed up only while scrolling text
     uint8_t key = steps < 0 ? KEY_UP : KEY_DOWN;
-    for (int32_t i = steps < 0 ? -steps : steps; i > 0; i--) {
+    for (int32_t i = 0; i < total; i++) {
+        if (i >= n && !scrolling()) break;
         if (model.mode == Mode::Screen && model.screen.active) screenKey(key);
         else if (model.mode == Mode::Status) statusKey(key);
         else if (model.mode == Mode::Sessions) sessionsKey(key);
@@ -588,8 +626,12 @@ void tick() {
     if (model.mode == Mode::Screen && model.screen.expiresAt && (int32_t)(now - model.screen.expiresAt) > 0) {
         model.screen.active = false;
         model.mode = Mode::Status;
+        model.screenEndedAt = now;
     }
-    if (model.mode == Mode::Screen && !model.screen.active) model.mode = Mode::Status;
+    if (model.mode == Mode::Screen && !model.screen.active) {
+        model.mode = Mode::Status;
+        model.screenEndedAt = now;
+    }
 
     // Idle on battery: dim the backlight (never with a request on screen or an update, and never
     // when running from a wire). A key press or a request lights it up again.
@@ -643,24 +685,9 @@ void appBegin() {
     linkConfigure(stored);
 }
 
-// Holding up/down repeats (moving through a long list or text one press at a time is tedious).
-// Only these two: no other key may ever act twice from one press.
-static void repeatHeldNavigation() {
-    static uint32_t nextAt = 0;
-    if (model.mode != Mode::Status && model.mode != Mode::Screen && model.mode != Mode::Sessions) return;
-    uint32_t now = millis();
-    for (uint8_t k : {KEY_UP, KEY_DOWN}) {
-        if (!inputHeld(k, REPEAT_AFTER_MS) || (int32_t)(now - nextAt) < 0) continue;
-        onKey({k, KeyAction::Press, now, now, true});
-        nextAt = now + REPEAT_EVERY_MS;
-        markDirty();
-    }
-}
-
 bool appLoop() {
     linkPoll();
     inputPoll();
-    repeatHeldNavigation();
     KeyEvent ev;
     while (inputNext(ev)) {
         onKey(ev);

@@ -158,9 +158,15 @@ def permission_question(name: str, inp: dict[str, Any]) -> str:
     return "Do you want to proceed?"
 
 
-def always_label(suggestions: list[Any]) -> str:
+def for_session(suggestions: list[Any]) -> list[Any]:
+    """Claude Code's permission_suggestions, each made to last only for the running session."""
+    return [{**u, "destination": "session"} if isinstance(u, dict) else u for u in suggestions]
+
+
+def always_label(suggestions: list[Any], session: bool = False) -> str:
     """Option 2 of the permission dialog: what accepting Claude Code's
-    permission_suggestions does, in its words."""
+    permission_suggestions does, in its words (session: only until the session ends)."""
+    when = " this session" if session else ""
     for u in suggestions:
         if not isinstance(u, dict):
             continue
@@ -168,9 +174,9 @@ def always_label(suggestions: list[Any]) -> str:
         if t == "setMode" and u.get("mode") == "acceptEdits":
             return "Yes, allow all edits during this session"
         if t == "addDirectories" and u.get("directories"):
-            return f"Yes, and always allow access to {base(str(u['directories'][0]))}/"
+            return f"Yes, and {'allow' if session else 'always allow'} access to {base(str(u['directories'][0]))}/{when}"
         if t == "addRules":
             rules = [str(r.get("ruleContent") or r.get("toolName") or "") for r in u.get("rules") or [] if isinstance(r, dict)]
             if rules := [r for r in rules if r]:
-                return "Yes, and don't ask again for " + ", ".join(rules)
-    return "Yes, and don't ask again"
+                return "Yes, and don't ask again" + when + " for " + ", ".join(rules)
+    return "Yes, and don't ask again" + when

@@ -18,12 +18,20 @@ from .proto import VERSION
 
 KEY_SIZE = 32
 NONCE_SIZE = 16
-MAX_FRAME = 4096
+MAX_FRAME = 16384
 INFO = b"keypad v3"
 
 
 class SecureError(Exception):
     pass
+
+
+class Refused(SecureError):
+    """The keypad said no. code is a proto.Refusal ("" from older firmware), host the computer holding it (busy)."""
+
+    def __init__(self, why: str, code: str = "", host: str = ""):
+        super().__init__(f"keypad refused: {why}")
+        self.why, self.code, self.host = why, code, host
 
 
 def new_key() -> str:
@@ -105,8 +113,9 @@ def _hi(**fields) -> bytes:
     return json.dumps({"t": "hi", "v": VERSION, **fields}, separators=(",", ":")).encode()
 
 
-def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: str) -> Conn:
-    """The host side. want_id is the keypad id we paired with; psk_hex its key."""
+def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: str, take: bool = False) -> Conn:
+    """The host side. want_id is the keypad id we paired with; psk_hex its key. take asks to
+    replace another computer that holds the keypad now."""
     try:
         psk = bytes.fromhex(psk_hex)
     except ValueError as e:
@@ -114,13 +123,13 @@ def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: s
     if len(psk) != KEY_SIZE:
         raise SecureError("invalid pairing key")
     nh = os.urandom(NONCE_SIZE)
-    write_frame(sock, _hi(host=host_id, n=nh.hex()))
+    write_frame(sock, _hi(host=host_id, n=nh.hex(), **({"take": 1} if take else {})))
     try:
         h = json.loads(read_frame(sock))
     except ValueError as e:
         raise SecureError("bad keypad hello") from e
     if h.get("t") == "no":
-        raise SecureError(f"keypad refused: {h.get('why', '')}")
+        raise Refused(str(h.get("why", "")), str(h.get("code", "")), str(h.get("host", "")))
     if h.get("t") != "hi" or h.get("v") != VERSION or h.get("id") != want_id:
         raise SecureError(f"unexpected keypad {h.get('id', '')!r}")
     try:
@@ -131,23 +140,3 @@ def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: s
         raise SecureError("bad keypad nonce")
     h2d, d2h = derive_keys(psk, nh, nd)
     return Conn(sock, h2d, d2h, h["id"])
-
-
-def server_handshake(sock: socket.socket, dev_id: str, paired_host: str, psk_hex: str) -> Conn:
-    """The keypad side; used by tests."""
-    try:
-        h = json.loads(read_frame(sock))
-    except ValueError as e:
-        raise SecureError("bad hello") from e
-    if h.get("t") != "hi" or h.get("v") != VERSION:
-        raise SecureError("bad hello")
-    if h.get("host") != paired_host:
-        write_frame(sock, json.dumps({"t": "no", "why": "not paired with this host"}).encode())
-        raise SecureError("unknown host")
-    nh = bytes.fromhex(h.get("n", ""))
-    if len(nh) != NONCE_SIZE:
-        raise SecureError("bad host nonce")
-    nd = os.urandom(NONCE_SIZE)
-    write_frame(sock, _hi(id=dev_id, n=nd.hex()))
-    h2d, d2h = derive_keys(bytes.fromhex(psk_hex), nh, nd)
-    return Conn(sock, d2h, h2d, h["host"])

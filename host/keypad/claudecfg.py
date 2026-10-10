@@ -11,19 +11,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Behavior, write_atomic
+from .config import MAX_CONTINUES, write_atomic
 
-# Blocking hooks wait for a key press; the agent enforces the configured timeout, so
-# Claude Code only cuts a hook off this long after it (a hung agent, not a slow answer).
-GRACE = 30
+# Blocking hooks wait for a key press; the agent enforces behavior.timeout (at most 3600 s), so
+# Claude Code only cuts a hook off after that plus a grace (a hung agent, not a slow answer).
+BLOCKING_TIMEOUT = 3600 + 30
 QUICK_TIMEOUT = 15
 KEEP_BACKUPS = 5
 
 # event -> (waits for a key press, tool matcher). The hooks only decide; the live feed comes from the transcript.
-# PreToolUse is only for AskUserQuestion, so the hook does not start on every tool call.
+# PreToolUse is only for AskUserQuestion. PostToolUse runs after every tool call, and only to hand
+# Claude a prompt sent from the keypad while it works (it lands with the next tool result).
 EVENTS = {
     "SessionStart": (False, ""), "SessionEnd": (False, ""), "UserPromptSubmit": (False, ""),
-    "PreToolUse": (True, "AskUserQuestion"), "PermissionRequest": (True, ""), "Stop": (True, ""),
+    "PreToolUse": (True, "AskUserQuestion"), "PostToolUse": (False, ""),
+    "PermissionRequest": (True, ""), "Stop": (True, ""),
 }
 
 
@@ -117,19 +119,18 @@ def _strip(hooks: dict[str, Any]) -> None:
             del hooks[ev]
 
 
-def install(binary: str, behavior: Behavior) -> None:
-    """Adds hooks for binary. The settings' max_continues raises Claude Code's own Stop-hook
-    block cap to the same number, and its timeout sets how long a hook may wait."""
+def install(binary: str) -> None:
+    """Adds hooks for binary, and raises Claude Code's own Stop-hook block cap to MAX_CONTINUES."""
     m = _read_settings()
     hooks = m.get("hooks") if isinstance(m.get("hooks"), dict) else {}
     _strip(hooks)
     for ev, (waits, matcher) in EVENTS.items():
         entry = {"type": "command", "command": binary, "args": ["hook", ev],
-                 "timeout": behavior.timeout + GRACE if waits else QUICK_TIMEOUT}
+                 "timeout": BLOCKING_TIMEOUT if waits else QUICK_TIMEOUT}
         hooks.setdefault(ev, []).append({**({"matcher": matcher} if matcher else {}), "hooks": [entry]})
     m["hooks"] = hooks
     env = m.get("env") if isinstance(m.get("env"), dict) else {}
-    env["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] = str(behavior.max_continues)
+    env["CLAUDE_CODE_STOP_HOOK_BLOCK_CAP"] = str(MAX_CONTINUES)
     m["env"] = env
     _write_settings(m)
 

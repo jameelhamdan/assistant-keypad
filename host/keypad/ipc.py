@@ -18,6 +18,7 @@ import select
 import socket
 import struct
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -125,6 +126,19 @@ def alive() -> bool:
 Handler = Callable[[str, str, Any, Callable[[], bool]], tuple[int, Any]]
 # handler(method, path, body, client_gone) -> (status, body); client_gone() turns
 # True when the client hung up (e.g. Claude Code cancelled the hook).
+
+
+def quit_agent(timeout: float = 5, wait: float = 0.0) -> None:
+    """Asks a running agent to exit; with wait, until it is gone (or that many seconds passed)."""
+    if not alive():
+        return
+    try:
+        request("POST", "/quit", timeout=timeout)
+    except (AgentNotRunning, RequestError):
+        pass
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline and alive():
+        time.sleep(0.1)
 
 
 def _write_info(port: int, token: str) -> None:

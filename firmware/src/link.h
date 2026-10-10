@@ -26,4 +26,6 @@ bool linkSend(Src src, const char *json, size_t len);
 // (Re)apply Wi-Fi credentials and pairing after they changed.
 void linkConfigure(const Stored &st);
 bool linkNetAuthed();        // an authenticated host session exists
+const char *linkHost();      // its paired host id ("" if none)
+void linkNamePeer(const char *name);   // what that computer calls itself (told to a second one that finds the keypad busy)
 WifiStatus linkWifi();

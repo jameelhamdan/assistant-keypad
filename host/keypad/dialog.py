@@ -5,11 +5,12 @@ as arguments or environment variables, never pasted into script source."""
 
 from __future__ import annotations
 
-import base64
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 
 _JXA = r"""function run(argv) {
   var kind = argv[0], title = argv[1], msg = argv[2], def = argv[3], ok = argv[4], cancel = argv[5];
@@ -74,6 +75,8 @@ $f.Controls.Add($p)
 $f.Add_Shown({ $f.Activate(); if ($t) { $t.Focus() } })
 if ($f.ShowDialog() -eq 'OK') {
   if ($t) { [Console]::Out.Write("OK`n" + $t.Text) } else { [Console]::Out.Write('OK') }
+} else {
+  [Console]::Out.Write('CANCEL')
 }
 """
 
@@ -89,10 +92,25 @@ $id = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.
 """
 
 
-def _powershell(script: str) -> list[str]:
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+def _powershell(script_path: str) -> list[str]:
     return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-STA",
-            "-WindowStyle", "Hidden", "-EncodedCommand", encoded]
+            "-WindowStyle", "Hidden", "-File", script_path]
+
+
+def _run_powershell(script: str, env: dict[str, str], answers: tuple[str, ...] = ("OK", "CANCEL"), attempts: int = 3) -> str | None:
+    """Runs a script and returns what it printed. The script goes through a file, not -EncodedCommand: on some
+    machines Windows starts an encoded PowerShell and ends it at once, printing nothing (seen here on every
+    second launch). Output that is no known answer means the launch failed, so it is tried again."""
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "keypad-dialog.ps1")
+        with open(path, "w", encoding="utf-8-sig") as f:  # the BOM makes Windows PowerShell read it as UTF-8
+            f.write(script)
+        for _ in range(attempts):
+            r = subprocess.run(_powershell(path), capture_output=True, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+            out = r.stdout.decode("utf-8", errors="replace").rstrip("\r\n")
+            if out.startswith(answers):
+                return out
+    return None
 
 
 def _show(kind: str, title: str, msg: str, default: str = "", ok: str = "OK", cancel: str = "Cancel") -> str | None:
@@ -105,9 +123,7 @@ def _show(kind: str, title: str, msg: str, default: str = "", ok: str = "OK", ca
         elif sys.platform == "win32":
             env = {**os.environ, "KP_KIND": kind, "KP_TITLE": title, "KP_MSG": msg, "KP_DEF": default,
                    "KP_OK": ok, "KP_CANCEL": cancel}
-            r = subprocess.run(_powershell(_FORM), capture_output=True, env=env,
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-            out = r.stdout.decode("utf-8", errors="replace").rstrip("\r\n")
+            out = _run_powershell(_FORM, env) or "CANCEL"
         else:
             return _zenity(kind, title, msg, default, ok, cancel)
     except OSError:
@@ -153,7 +169,7 @@ def notify(title: str, message: str) -> None:
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif sys.platform == "win32":
             env = {**os.environ, "KP_TITLE": title, "KP_MSG": message}
-            subprocess.Popen(_powershell(_TOAST), env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+            threading.Thread(target=_run_powershell, args=(_TOAST, env, ("",), 1), daemon=True).start()
         elif shutil.which("notify-send"):
             subprocess.Popen(["notify-send", title, message])
     except OSError:

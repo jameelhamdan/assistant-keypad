@@ -62,7 +62,7 @@ def test_number_keys_pick(kp, key, idx):
 def test_enter_selects_the_cursor(kp):
     kp.msg(sc.SCREENS["permission"])
     kp.wait(300)
-    kp.key(8)   # down
+    kp.turn(1)  # down
     kp.key(7)   # enter
     assert presses(kp)[-1]["idx"] == 1
 
@@ -86,7 +86,7 @@ def test_esc_ends_the_finished_screen(kp):
 def test_pressing_the_knob_is_enter(kp):
     kp.msg({**sc.SCREENS["question"], "id": "q-knob"})
     kp.wait(300)
-    kp.key(8)  # move to the second option
+    kp.turn(1)  # move to the second option
     kp.key(0)  # the knob press
     p = presses(kp)[-1]
     assert p["act"] == "pick" and p["idx"] == 1 and p["key"] == 7, "the knob press answers like Enter"
@@ -142,7 +142,7 @@ def test_multi_select_submits_ticked_options(kp):
     kp.wait(300)
     kp.key(1)
     kp.key(3)
-    kp.key(8); kp.key(8); kp.key(8)   # to Submit
+    kp.turn(3)   # to Submit
     kp.key(7)
     p = presses(kp)[-1]
     assert p["act"] == "submit" and p["sel"] == [0, 2]
@@ -167,9 +167,33 @@ def test_session_list_selects_a_session(kp):
     a, b = dict(sc.SESSION, id="aaaa0001"), dict(sc.SESSION, id="bbbb0002", project="api", name="Docs")
     kp.msg(sc.status(sessions=[a, b]))
     kp.key(6)
-    kp.key(2)   # the second session row (row 0 is "follow latest")
+    kp.key(2)   # the second session
     s = [m for m in kp.tx if m["t"] == "session"]
-    assert s and s[-1]["act"] == "select" and s[-1]["sid"] in ("aaaa0001", "bbbb0002")
+    assert s and s[-1] == {"t": "session", "act": "select", "sid": "bbbb0002"}
+
+
+def test_the_session_list_has_only_sessions_and_the_knob_walks_them(kp):
+    a, b, c = (dict(sc.SESSION, id=f"{n}0000", project=n) for n in ("aaaa", "bbbb", "cccc"))
+    kp.msg({**sc.status(sessions=[a, b, c])})
+    kp.key(6)
+    kp.turn(5)   # past the end: stops on the last session
+    kp.key(7)
+    s = [m for m in kp.tx if m["t"] == "session"]
+    assert s[-1]["sid"] == "cccc0000"
+    assert not [m for m in kp.tx if m.get("act") == "follow"], "there is no follow row any more"
+
+
+def test_a_queued_prompt_is_shown_and_esc_takes_it_back(kp):
+    kp.msg({**sc.status(menu=True), "quick": ["Tests"], "queued": "Tests"})
+    kp.wait(2000)
+    kp.tx.clear()
+    kp.key(5)
+    p = [m for m in kp.tx if m["t"] == "press"]
+    assert p and (p[-1]["id"], p[-1]["act"]) == ("status", "unqueue")
+    kp.msg({**sc.status(menu=True), "quick": ["Tests"], "queued": ""})
+    kp.tx.clear()
+    kp.key(5)
+    assert not [m for m in kp.tx if m["t"] == "press"], "nothing queued: Esc only goes back to the newest line"
 
 
 def test_feed_replaces_the_transcript_and_keeps_the_newest_entries(kp):
@@ -193,13 +217,38 @@ def test_host_silence_shows_waiting_then_recovers(kp):
     assert ink(kp.image(), BOTTOM_RIGHT) > 20
 
 
-def test_holding_down_repeats_the_cursor_but_never_decides(kp):
-    kp.msg({**sc.SCREENS["question"], "id": "q-rep", "items": [f"option {i}" for i in range(1, 11)]})
+def test_keys_4_and_8_never_move_a_cursor_or_decide_on_a_dialog(kp):
+    kp.msg({**sc.SCREENS["question"], "id": "q-nav", "items": [f"option {i}" for i in range(1, 11)]})
     kp.wait(300)
+    kp.key(8)
+    kp.key(4)
     kp.hold(8, 1500)
-    assert not presses(kp), "holding a navigation key must not answer"
+    assert not presses(kp), "4 and 8 are saved prompts, not navigation"
     kp.key(7)
-    assert presses(kp)[-1]["idx"] >= 5
+    assert presses(kp)[-1]["idx"] == 0, "the cursor did not move"
+
+
+def test_the_knob_moves_one_row_per_detent_in_a_list_however_fast(kp):
+    kp.msg({**sc.SCREENS["question"], "id": "q-fast", "items": [f"option {i}" for i in range(1, 11)]})
+    kp.wait(300)
+    kp.spin(3, 20)   # a fast hand: still one row per detent in a list
+    kp.key(7)
+    assert presses(kp)[-1]["idx"] == 3
+
+
+def test_a_fast_knob_scrolls_the_transcript_further_than_a_slow_one(kp):
+    kp.msg(sc.status(state="idle", log=[{"k": "c", "t": "\n".join(f"line {i}" for i in range(80))}]))
+
+    def scrolled_back(detents, gap_ms):
+        kp.key(5)   # back to the newest line
+        kp.wait(1000)
+        kp.spin(-detents, gap_ms)
+        return kp.image().tobytes()
+
+    fast = scrolled_back(3, 20)      # three detents in a rush: 1 + 4 + 4 rows
+    slow9 = scrolled_back(9, 300)    # nine unhurried detents: 9 rows
+    slow3 = scrolled_back(3, 300)    # three unhurried detents: 3 rows
+    assert fast == slow9 and fast != slow3
 
 
 def test_a_held_number_key_does_not_repeat(kp):
@@ -219,3 +268,66 @@ def test_paused_is_visible_while_working(kp):
     assert warning_pixels() == 0
     kp.msg(sc.status(state="working", paused=True))
     assert warning_pixels() > 20
+
+
+def test_waiting_says_when_the_computer_was_last_seen(kp):
+    kp.msg(sc.status())                 # the host was here
+    kp.host(False)
+    kp.wait(9000)
+    before = kp.image()
+    kp.wait(120000)                     # two minutes later the line reads "last seen 2m ago"
+    after = kp.image()
+    row = (30, 76, 320, 96)
+    assert ink(before, row) > 100 and ink(after, row) > 100
+    assert before.crop(row).tobytes() != after.crop(row).tobytes(), "the age moves on"
+
+
+def quick_status(kp):
+    kp.msg({**sc.status(menu=True), "quick": ["Tests", "Commit"]})
+
+
+def test_keys_1_to_3_send_saved_prompts_from_the_status_screen(kp):
+    quick_status(kp)
+    kp.wait(2000)
+    kp.tx.clear()
+    kp.key(2)
+    p = [m for m in kp.tx if m["t"] == "press"]
+    assert p and (p[-1]["id"], p[-1]["act"], p[-1]["idx"]) == ("status", "quick", 1)
+    kp.tx.clear()
+    kp.key(3)   # only two are saved
+    assert not [m for m in kp.tx if m["t"] == "press"]
+
+
+def test_keys_4_and_8_are_saved_prompts_4_and_5(kp):
+    kp.msg({**sc.status(menu=True), "quick": ["A", "B", "C", "D", "E"]})
+    kp.wait(2000)
+    for key, idx in ((4, 3), (8, 4), (3, 2)):
+        kp.tx.clear()
+        kp.key(key)
+        p = [m for m in kp.tx if m["t"] == "press"]
+        assert p and (p[-1]["act"], p[-1]["idx"], p[-1]["key"]) == ("quick", idx, key)
+
+
+def test_keys_4_and_8_do_nothing_without_a_saved_prompt_or_off_the_status_screen(kp):
+    quick_status(kp)           # two prompts
+    kp.wait(2000)
+    kp.tx.clear()
+    kp.key(4)
+    kp.key(8)
+    kp.key(6)                  # the session list: not the status screen
+    kp.key(8)
+    kp.key(4)
+    assert not [m for m in kp.tx if m["t"] == "press"]
+
+
+def test_a_press_right_after_a_request_does_not_send_a_saved_prompt(kp):
+    quick_status(kp)
+    kp.msg(sc.SCREENS["permission"])
+    kp.wait(400)
+    kp.key(3)            # "No" on the dialog
+    kp.tx.clear()
+    kp.key(1)            # a second press meant for a dialog that is already gone
+    assert not [m for m in kp.tx if m["t"] == "press"], "must not queue a prompt by accident"
+    kp.wait(2000)
+    kp.key(1)
+    assert [m for m in kp.tx if m["t"] == "press" and m["act"] == "quick"]

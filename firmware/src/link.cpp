@@ -55,6 +55,9 @@ struct Session {
     bool keyed = false;   // handshake done, waiting for the first encrypted frame
     bool authed = false;  // first frame decrypted: the peer holds the key
     uint32_t since = 0;
+    uint32_t lastRx = 0;  // last decrypted frame
+    char host[24] = "";   // the paired computer this session belongs to
+    char peer[32] = "";   // its name, once it said hello (shown to a second computer that finds the keypad busy)
     Sealer tx, rx;
     uint8_t *buf = nullptr;   // FRAME_MAX + 2 bytes
     size_t have = 0;
@@ -63,6 +66,7 @@ struct Session {
         if (used) c.stop();
         used = keyed = authed = false;
         have = 0;
+        host[0] = peer[0] = '\0';
     }
 };
 
@@ -73,15 +77,25 @@ Session *pending = &slots[1];
 uint8_t *plain;    // FRAME_MAX bytes
 uint8_t *sealed;   // FRAME_MAX + 2 bytes
 
-bool writeFrame(WiFiClient &c, const uint8_t *b, size_t n) {
-    uint8_t hdr[2] = {(uint8_t)(n >> 8), (uint8_t)n};
-    return c.write(hdr, 2) == 2 && c.write(b, n) == n;
+// A frame goes out in one write: header and body together, so a stalled host cannot leave half a frame
+// on the wire (a short write ends the session; the stream could not be resynchronised).
+bool writeWhole(WiFiClient &c, const uint8_t *frame, size_t total) { return c.write(frame, total) == total; }
+
+bool writePlain(WiFiClient &c, const char *json, size_t n) {   // handshake frames: small
+    uint8_t buf[2 + 192];
+    if (n > sizeof(buf) - 2) return false;
+    buf[0] = (uint8_t)(n >> 8);
+    buf[1] = (uint8_t)n;
+    memcpy(buf + 2, json, n);
+    return writeWhole(c, buf, n + 2);
 }
 
-void refuse(Session &s, const char *why) {
-    char out[96];
-    int n = snprintf(out, sizeof(out), "{\"t\":\"no\",\"why\":\"%s\"}", why);
-    writeFrame(s.c, (const uint8_t *)out, n);
+// code: a stable reason for the host (see proto.Refusal); why: the same in words.
+void refuse(Session &s, const char *code, const char *why, const char *host = nullptr) {
+    char out[192];
+    int n = host && host[0] ? snprintf(out, sizeof(out), "{\"t\":\"no\",\"code\":\"%s\",\"why\":\"%s\",\"host\":\"%s\"}", code, why, host)
+                            : snprintf(out, sizeof(out), "{\"t\":\"no\",\"code\":\"%s\",\"why\":\"%s\"}", code, why);
+    if (n > 0 && n < (int)sizeof(out)) writePlain(s.c, out, n);
     s.close();
 }
 
@@ -89,21 +103,30 @@ void refuse(Session &s, const char *why) {
 void handshake(Session &s, const uint8_t *f, size_t n) {
     JsonDocument doc;
     if (deserializeJson(doc, (const char *)f, n) || strcmp(doc["t"] | "", "hi") != 0 || doc["v"] != PROTOCOL_VERSION) {
-        refuse(s, "bad hello");
+        refuse(s, "bad_hello", "bad hello");
         return;
     }
-    if (!cfg.paired) { refuse(s, "keypad is not paired"); return; }
-    if (strcmp(doc["host"] | "", cfg.host) != 0) { refuse(s, "paired with another computer"); return; }
+    if (!cfg.paired) { refuse(s, "not_paired", "keypad is not paired"); return; }
+    const char *host = doc["host"] | "";
+    int slot = storeFindHost(cfg, host);
+    if (slot < 0) { refuse(s, "other_host", "not paired with this computer"); return; }
+    // One computer at a time. A second one is told who has the keypad, unless that session has gone quiet,
+    // it is the same computer coming back, or the newcomer asks to take over.
+    if (active->authed && strcmp(active->host, host) != 0 && millis() - active->lastRx < HOST_TIMEOUT_MS && !(doc["take"] | 0)) {
+        refuse(s, "busy", "in use by another computer", active->peer);
+        return;
+    }
     uint8_t nh[16], nd[16], h2d[32], d2h[32];
-    if (!hexDecode(doc["n"] | "", nh, 16)) { refuse(s, "bad nonce"); return; }
+    if (!hexDecode(doc["n"] | "", nh, 16)) { refuse(s, "bad_nonce", "bad nonce"); return; }
     esp_fill_random(nd, sizeof(nd));
-    if (!deriveKeys(cfg.key, nh, nd, h2d, d2h) || !s.tx.init(d2h) || !s.rx.init(h2d)) { s.close(); return; }
+    if (!deriveKeys(cfg.hosts[slot].key, nh, nd, h2d, d2h) || !s.tx.init(d2h) || !s.rx.init(h2d)) { s.close(); return; }
     memset(h2d, 0, 32);
     memset(d2h, 0, 32);
     char out[160], hex[33];
     for (int i = 0; i < 16; i++) sprintf(hex + 2 * i, "%02x", nd[i]);
     int len = snprintf(out, sizeof(out), "{\"t\":\"hi\",\"v\":%d,\"id\":\"%s\",\"n\":\"%s\"}", PROTOCOL_VERSION, devId, hex);
-    if (!writeFrame(s.c, (const uint8_t *)out, len)) { s.close(); return; }
+    if (len <= 0 || !writePlain(s.c, out, len)) { s.close(); return; }
+    strlcpy(s.host, host, sizeof(s.host));
     s.keyed = true;
 }
 
@@ -115,6 +138,7 @@ bool frame(Session &s, const uint8_t *f, size_t n) {
     }
     if (n <= GCM_TAG || !s.rx.open(f, n, plain)) return false;   // wrong key, replay, tampering
     size_t len = n - GCM_TAG;
+    s.lastRx = millis();
     if (!s.authed) {
         s.authed = true;
         if (&s == pending) {   // promote: this host proved it holds the key
@@ -171,7 +195,8 @@ void pollWifi() {
                 MDNS.addService("ckeypad", "tcp", TCP_PORT);
                 MDNS.addServiceTxt("ckeypad", "tcp", "id", devId);
                 MDNS.addServiceTxt("ckeypad", "tcp", "fw", KEYPAD_FW_VERSION);
-                MDNS.addServiceTxt("ckeypad", "tcp", "v", "3");
+                String ver(PROTOCOL_VERSION);
+                MDNS.addServiceTxt("ckeypad", "tcp", "v", ver.c_str());
                 MDNS.addServiceTxt("ckeypad", "tcp", "paired", cfg.paired ? "1" : "0");
             }
         }
@@ -244,8 +269,11 @@ bool linkSend(Src src, const char *json, size_t len) {
         return true;
     }
     if (!active->authed || len > FRAME_MAX - GCM_TAG) return false;
-    if (!active->tx.seal((const uint8_t *)json, len, sealed)) return false;
-    if (!writeFrame(active->c, sealed, len + GCM_TAG)) {
+    if (!active->tx.seal((const uint8_t *)json, len, sealed + 2)) return false;   // after room for the length
+    size_t n = len + GCM_TAG;
+    sealed[0] = (uint8_t)(n >> 8);
+    sealed[1] = (uint8_t)n;
+    if (!writeWhole(active->c, sealed, n + 2)) {
         active->close();
         return false;
     }
@@ -253,5 +281,12 @@ bool linkSend(Src src, const char *json, size_t len) {
 }
 
 bool linkNetAuthed() { return active->authed; }
+
+const char *linkHost() { return active->authed ? active->host : ""; }
+
+void linkNamePeer(const char *name) {
+    strlcpy(active->peer, name ? name : "", sizeof(active->peer));
+    for (char *p = active->peer; *p; p++) if (*p == '"' || *p == '\\' || (uint8_t)*p < 32) *p = ' ';   // it goes into a JSON refusal
+}
 
 WifiStatus linkWifi() { return wifi; }

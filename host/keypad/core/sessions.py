@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,16 +13,13 @@ from .. import proto
 from .markdown import device_text, render
 from .text import clip, project_of
 
-IDLE, THINKING, WORKING, TOOL = "idle", "thinking", "working", "tool"
-PERMISSION, QUESTION = "permission", "question"
-DONE, STOPPED, CONTINUING, ENDED = "done", "stopped", "continuing", "ended"
-
-BUSY_STATES = {THINKING, WORKING, TOOL, PERMISSION, QUESTION, CONTINUING}
-# What the keypad and the tray are told: the one place the states are grouped.
-# working / continuing: Claude is busy; asking: a request waits for you; stopped: Claude
-# finished and waits for you; idle: nothing going on. (ui.cpp compares against these words.)
-PHASES = {THINKING: "working", WORKING: "working", TOOL: "working", CONTINUING: "continuing",
-          PERMISSION: "asking", QUESTION: "asking", STOPPED: "stopped"}
+# What the keypad and the tray are told, and the only states a session has (ui.cpp compares against
+# these words). working / continuing: Claude is busy; asking: a request waits for you; stopped:
+# Claude finished and waits for you; idle: nothing going on. ENDED is internal: the session is gone.
+IDLE, WORKING, CONTINUING, ASKING, STOPPED = "idle", "working", "continuing", "asking", "stopped"
+ENDED = "ended"
+PHASES = (IDLE, WORKING, CONTINUING, ASKING, STOPPED)
+BUSY_STATES = {WORKING, CONTINUING, ASKING}
 STALE_AFTER = 6 * 3600
 
 # transcript line kinds
@@ -48,11 +46,7 @@ class Session:
     log: list[dict[str, str]] = field(default_factory=list)  # latest transcript lines, oldest first
 
     def view(self) -> dict[str, Any]:
-        return {**{k: copy.copy(v) for k, v in self.__dict__.items()}, "phase": phase(self.state)}
-
-
-def phase(state: str) -> str:
-    return PHASES.get(state, "idle")
+        return {k: copy.copy(v) for k, v in self.__dict__.items()}
 
 
 def fit_log(kind: str, text: str) -> str:
@@ -72,7 +66,8 @@ class Sessions:
         self._lock = threading.Lock()
         self._m: dict[str, Session] = {}
         self._current = ""
-        self._pinned = ""
+        self._chosen = False  # set by hand from the keypad's session list; held until something needs you
+        self.on_change: Callable[[], None] = lambda: None  # called after a session's state changed
 
     def _get(self, sid: str) -> Session:
         x = self._m.get(sid)
@@ -83,15 +78,16 @@ class Sessions:
 
     def _prune(self, keep: str) -> None:
         """Drops the least recently active session once there are too many,
-        never the one just added, the current or the pinned one."""
+        never the one just added or the current one."""
         if len(self._m) <= MAX_SESSIONS:
             return
-        cands = [x for x in self._m.values() if x.id not in (keep, self._current, self._pinned)]
+        cands = [x for x in self._m.values() if x.id not in (keep, self._current)]
         if cands:
             del self._m[min(cands, key=lambda x: x.last).id]
 
     def touch(self, sid: str, state: str, title: str, detail: str, cwd: str = "") -> None:
-        """Records an event. It becomes the current session unless another is pinned."""
+        """Records an event. It becomes the current session, unless one was chosen by hand and this event
+        does not need you (a request or Claude finishing)."""
         with self._lock:
             x = self._get(sid)
             if cwd:
@@ -100,13 +96,14 @@ class Sessions:
                 x.turn = time.time()  # a new turn: restart the "Working… (12s)" timer
             x.state, x.title, x.detail, x.last = state, title, detail, time.time()
             if state == ENDED:
-                if self._pinned == sid:
-                    self._pinned = ""
                 if self._current == sid:
-                    self._current = self._latest(exclude=sid)
-                return
-            if not self._pinned or self._pinned == sid:
-                self._current = sid
+                    self._current, self._chosen = self._latest(exclude=sid), False
+            else:
+                if state in (ASKING, STOPPED):
+                    self._chosen = False
+                if not self._chosen:
+                    self._current = sid
+        self.on_change()
 
     def start(self, sid: str, cwd: str) -> None:
         """Registers a (re)started session and resets its counters."""
@@ -144,29 +141,18 @@ class Sessions:
                 x.continues = 0
 
     def select(self, prefix: str) -> bool:
-        """Pins the display to the session whose id starts with prefix."""
+        """Shows the session whose id starts with prefix, until a request or a finished turn elsewhere needs you."""
         with self._lock:
             for sid, x in self._m.items():
                 if prefix and sid.startswith(prefix) and x.state != ENDED:
-                    self._pinned = self._current = sid
+                    self._current, self._chosen = sid, True
                     return True
         return False
-
-    def follow(self) -> None:
-        """Unpins: the display follows the latest activity again."""
-        with self._lock:
-            self._pinned = ""
-            if latest := self._latest():
-                self._current = latest
 
     def current(self) -> Session | None:
         with self._lock:
             sid = self._current
         return self.get(sid)
-
-    def pinned(self) -> bool:
-        with self._lock:
-            return bool(self._pinned)
 
     def live(self) -> list[Session]:
         """Sessions with recent activity, newest first."""
@@ -219,7 +205,7 @@ def wire(sessions: list[Session]) -> list[dict[str, Any]]:
     out = []
     now = time.time()
     for x in sessions:
-        d = {"id": short(x.id), "project": proto.fit(x.project, proto.SESSION_PROJECT), "state": phase(x.state),
+        d = {"id": short(x.id), "project": proto.fit(x.project, proto.SESSION_PROJECT), "state": x.state,
              "title": proto.fit(clip(x.title, 40), proto.SESSION_TITLE), "since": int(now - (x.turn or x.started))}
         if x.detail:
             d["detail"] = proto.fit(clip(x.detail, 120), proto.SESSION_DETAIL)

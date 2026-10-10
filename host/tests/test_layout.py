@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LABELS = {1: "[1]", 2: "[2]", 3: "[3]", 4: "[4 up]", 5: "[5]", 6: "[6]", 7: "[7]", 8: "[8 down]"}
+LABELS = {1: "[1]", 2: "[2]", 3: "[3]", 4: "[4]", 5: "[5]", 6: "[6]", 7: "[7]", 8: "[8]"}
 
 
 def key_map() -> list[list[int]]:

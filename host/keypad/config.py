@@ -17,6 +17,7 @@ from typing import Any
 from .dirs import data_dir
 
 MAX_SHORTCUTS = 16  # what the tray lists and the keypad pages through
+MAX_CONTINUES = 20  # consecutive keypad continues: Claude Code's own cap on them, which the installer sets to this
 
 
 def log_dir() -> Path:
@@ -40,11 +41,25 @@ class Shortcut:
     prompt: str = ""
 
 
+def default_shortcuts() -> list[Shortcut]:
+    """The saved prompts a first run starts with (the first five are on the keypad's quick keys)."""
+    return [Shortcut(label, prompt) for label, prompt in (
+        ("Tests", "Run the project's tests and fix any failures."),
+        ("Commit", "Commit the current changes with a clear, concise message."),
+        ("Review", "Review your own changes for bugs and leftovers before we finish."),
+        ("Explain", "Explain briefly what you just did and why."),
+        ("Summary", "Summarize where we are and what is left to do, in a few lines."),
+        ("Clear", "Wrap up: write a short handoff note of the current state and next steps, so I can /clear the context."),
+    )]
+
+
 @dataclass
 class Behavior:
     ask_when_finished: int = 60  # s away from the PC before Claude finishing is asked on the keypad (0 = always, -1 = never)
-    max_continues: int = 20
-    intercept_ask_user_question: bool = True
+    notify_when_finished: bool = True  # light up the keypad when Claude finishes and nothing is asked on it
+    always_for_session: bool = False  # "don't ask again" lasts this Claude Code session only, not for good
+    run_when_idle: bool = True  # a saved prompt for an idle session runs by itself (claude -p --resume); off: it waits for your next prompt
+    auto_update: bool = True  # install new releases by itself (installed builds only); off: the tray offers them
     timeout: int = 300  # s the keypad waits for an answer before the PC takes over
 
 
@@ -52,7 +67,6 @@ class Behavior:
 class Config:
     behavior: Behavior = field(default_factory=Behavior)
     shortcuts: list[Shortcut] = field(default_factory=list)  # saved prompts, sent from the keypad (none by default)
-    log_level: str = "info"
 
     def validate(self) -> None:
         """Clamps values into safe ranges."""
@@ -65,7 +79,6 @@ class Config:
                 v = lo
             return max(lo, min(hi, v))
 
-        b.max_continues = clamp(b.max_continues, 1, 200)
         b.timeout = clamp(b.timeout, 10, 3600)
         b.ask_when_finished = clamp(b.ask_when_finished, -1, 3600)
         self.shortcuts = [s for s in self.shortcuts if s.label.strip() and s.prompt.strip()][:MAX_SHORTCUTS]
@@ -118,7 +131,7 @@ def load() -> tuple[Config, Exception | None]:
     an unreadable file gives the defaults."""
     p = config_path()
     if not p.exists():
-        c = Config()
+        c = Config(shortcuts=default_shortcuts())
         try:
             save(c)
         except OSError as e:

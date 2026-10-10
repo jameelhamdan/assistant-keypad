@@ -10,9 +10,9 @@ from keypad.device.hub import Hub
 def test_usb_is_only_scanned_for_setup(home):
     store = config.Store("h-1", [])
     hub = Hub(store, ev=None)
-    assert not hub.usb_wanted()  # no pairing page open: the cable is only power, another board is left alone
-    hub.open_pairing()
-    assert hub.usb_wanted()  # Add keypad… opens a window
+    assert not hub.usb.wanted()  # no keypad being set up: the cable is only power, another board is left alone
+    hub.usb.open()
+    assert hub.usb.wanted()  # Add keypad… opens a window
 
 
 class Sink:
@@ -52,7 +52,7 @@ def test_a_usb_setup_link_does_not_stop_the_wifi_dial(home):
     store.update("kp-000001", lambda d: setattr(d, "key", "k" * 64))
     hub = Hub(store, Sink(), host_name="PC")
     dialed = []
-    hub._dial = lambda d: (dialed.append(d.id), hub._release("dial:" + d.id))
+    hub._dial = lambda d: (dialed.append(d.id), hub.release("dial:" + d.id))
     usb = fakemod.Fake("kp-000001")
     usb.kind = "usb"
     threading.Thread(target=hub.serve, args=(usb,), daemon=True).start()
@@ -74,7 +74,10 @@ def test_refusals_are_explained_in_words():
     from keypad.device.hub import explain_refusal
 
     assert "flash" in explain_refusal("keypad refused: bad hello")
-    assert "another computer" in explain_refusal("keypad refused: paired with another computer")
+    assert "not paired with this computer" in explain_refusal("keypad refused: paired with another computer")
+    assert "not paired with this computer" in explain_refusal("x", code="other_host")
+    busy = explain_refusal("x", code="busy", host="Work PC")
+    assert "Work PC" in busy and "Use keypad here" in busy
     assert "Set up Wi-Fi" in explain_refusal("keypad refused: keypad is not paired")
     assert "Set up Wi-Fi" in explain_refusal("frame authentication failed")
 
@@ -101,7 +104,7 @@ def test_a_cable_on_an_already_connected_keypad_is_not_reopened_in_a_loop(home, 
     while not hub.conns():
         assert time.time() < deadline
         time.sleep(0.005)
-    from keypad.device import hub as hubmod
+    from keypad.device import pairing as hubmod
 
     def open_usb(port):
         usb = fakemod.Fake("kp-000001")
@@ -109,9 +112,9 @@ def test_a_cable_on_an_already_connected_keypad_is_not_reopened_in_a_loop(home, 
         return usb
 
     monkeypatch.setattr(hubmod, "UsbLink", open_usb)
-    assert hub._claim("usb:COM9")
-    hub._serve_usb("COM9")
-    wait_until = hub._quiet.get("COM9", 0.0)
+    assert hub.claim("usb:COM9")
+    hub.usb._serve("COM9")
+    wait_until = hub.usb._quiet.get("COM9", 0.0)
     assert wait_until > time.monotonic() + 30, "the port should be left alone for a while"
     wifi.close()
 
@@ -124,7 +127,7 @@ def test_keypad_ids_come_from_the_usb_serial_number():
 
 
 def test_the_port_of_a_keypad_that_is_connected_over_wifi_is_never_opened(home, monkeypatch):
-    from keypad.device import hub as hubmod
+    from keypad.device import pairing as hubmod
 
     store, _ = config.Store.open()
     hub = Hub(store, Sink(), host_name="PC")
@@ -137,7 +140,7 @@ def test_the_port_of_a_keypad_that_is_connected_over_wifi_is_never_opened(home, 
     opened = []
     monkeypatch.setattr(hubmod, "usb_devices", lambda: [("COM5", "kp-22f90c"), ("COM6", "kp-aaaaaa")])
     monkeypatch.setattr(hubmod, "UsbLink", lambda port: (opened.append(port), (_ for _ in ()).throw(OSError("busy")))[1])
-    hub.open_pairing()
+    hub.usb.open()
     stop = threading.Event()
     threading.Thread(target=hub.run, args=(stop,), daemon=True).start()
     deadline = time.time() + 3
@@ -164,3 +167,41 @@ def test_an_error_after_connecting_is_logged_and_backs_off(home, caplog):
     assert "error while serving the connection" in caplog.text and "boom" in caplog.text
     hub._note_flap("kp-000001", 0.0)
     assert hub._dial_after["kp-000001"] > time.monotonic()
+
+
+def test_a_busy_keypad_is_looked_at_again_later_and_can_be_taken_over(home, monkeypatch):
+    from keypad import secure
+    from keypad.device import hub as hubmod
+
+    store, _ = config.Store.open()
+    store.update("kp-000001", lambda d: setattr(d, "key", "k" * 64))
+    hub = Hub(store, Sink(), host_name="PC")
+    takes = []
+
+    def refuse(addr, host_id, dev_id, key, take=False):
+        takes.append(take)
+        raise secure.Refused("in use by another computer", "busy", "Work PC")
+
+    monkeypatch.setattr(hubmod, "WifiLink", refuse)
+    d = store.device("kp-000001")
+    d.last_ip = "10.0.0.5"
+    hub.claim("dial:kp-000001")
+    hub._dial(d)
+    assert "Work PC" in hub.problems["kp-000001"]
+    assert hub._dial_after["kp-000001"] - time.monotonic() > 10, "no dialing every two seconds at a busy keypad"
+    assert "kp-000001" not in hub._flaps, "being refused is not a drop-out"
+    hub.take("kp-000001")
+    assert "kp-000001" not in hub.problems and "kp-000001" not in hub._dial_after
+    hub.claim("dial:kp-000001")
+    hub._dial(d)
+    assert takes == [False, True], "the next dial after Use keypad here asks the keypad to let go"
+
+
+def test_the_agent_counts_what_it_ignores(home):
+    import logging
+
+    from keypad.core.dialogs import Dialogs
+
+    dialogs = Dialogs(None, logging.getLogger("test"))
+    assert dialogs.press("kp-1", {"id": "p-1", "key": 7, "act": "pick", "idx": 0}) is False
+    assert dialogs.stats.view()["counts"] == {"press_stale": 1}

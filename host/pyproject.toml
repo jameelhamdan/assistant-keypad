@@ -17,6 +17,9 @@ dependencies = [
 [project.scripts]
 keypad = "keypad.__main__:main"
 
+[project.gui-scripts]
+keypadw = "keypad.__main__:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

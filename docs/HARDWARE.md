@@ -29,13 +29,13 @@ Links are Amazon searches, not product pages: listings change. Match the specs, 
   .-----.     |             screen               |
  (   o   )    |                                  |==== USB-C cable
   '-----'     |                                  |
-  turn: 4/8   +----------------------------------+
+  turn: move +----------------------------------+
   press: Enter
-              [1]    [2]    [3]    [4 up]
-              [5]    [6]    [7]    [8 down]
+              [1]    [2]    [3]    [4]
+              [5]    [6]    [7]    [8]
 ```
 
-Keys 1-3 pick an option, 4/8 move up/down, 7 is Enter, 5 is back, 6 lists sessions. The layout is fixed in firmware (`KEY_MAP` in `config.h`).
+Keys 1-3 pick an option, the knob moves and scrolls, 4 and 8 send saved prompts 4 and 5 from the status screen, 7 is Enter, 5 is back, 6 lists sessions. The layout is fixed in firmware (`KEY_MAP` in `config.h`).
 
 ## Wiring
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 import struct
 import threading
@@ -49,7 +50,8 @@ def usb_devices() -> list[tuple[str, str]]:
 
     try:
         return [(p.device, keypad_id(p.serial_number)) for p in list_ports.comports() if p.vid == proto.USB_VENDOR_ID]
-    except Exception:
+    except Exception as e:
+        logging.getLogger("keypad").debug("listing USB ports failed: %s", e)
         return []
 
 
@@ -113,13 +115,13 @@ SEND_TIMEOUT = 5.0  # bounds a write to a keypad that vanished without closing t
 class WifiLink(Link):
     kind = "wifi"
 
-    def __init__(self, addr: str, host_id: str, device_id: str, key: str):
+    def __init__(self, addr: str, host_id: str, device_id: str, key: str, take: bool = False):
         host, port = addr.rsplit(":", 1)
         self.addr = addr
         self._sock = socket.create_connection((host, int(port)), timeout=3)
         try:
             self._sock.settimeout(5)
-            self._conn = secure.client_handshake(self._sock, host_id, device_id, key)
+            self._conn = secure.client_handshake(self._sock, host_id, device_id, key, take)
             self._sock.settimeout(SEND_TIMEOUT)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

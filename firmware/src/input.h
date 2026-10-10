@@ -20,4 +20,3 @@ void inputBegin();
 void inputPoll();                       // every loop iteration
 bool inputNext(KeyEvent &ev);           // false when the queue is empty
 int32_t inputTakeSteps();               // encoder detents since last call (+ clockwise)
-bool inputHeld(uint8_t key, uint32_t forMs);

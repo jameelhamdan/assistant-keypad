@@ -69,7 +69,7 @@ def start_agent() -> tuple[threading.Event, logging.Logger] | None:
     if _started is not None and not _started.is_set():
         return None  # this process already runs one
     cfg, cfg_err = config.load()
-    log = open_log(cfg.log_level)
+    log = open_log(os.environ.get("KEYPAD_LOG", "info"))
     if cfg_err:
         log.warning("config problem, using defaults where needed: %s", cfg_err)
     if ipc.alive():

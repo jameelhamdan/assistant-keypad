@@ -60,7 +60,9 @@ begin
   // Settings and pairing keys live outside the app folder (in %APPDATA%\Keypad),
   // so the installer's own file removal never touches them; ask once, after
   // the uninstall above has already removed the hooks and login items.
-  if CurUninstallStep = usPostUninstall then
+  // Never when the uninstaller runs silently: /SUPPRESSMSGBOXES answers Yes to a Yes/No box, which would
+  // delete the pairing keys and settings of someone who only asked for the app to be removed.
+  if (CurUninstallStep = usPostUninstall) and (not UninstallSilent) then
     if MsgBox('Also delete Keypad''s settings and pairing keys?', mbConfirmation, MB_YESNO) = IDYES then
       DelTree(ExpandConstant('{userappdata}\Keypad'), True, True, True);
 end;

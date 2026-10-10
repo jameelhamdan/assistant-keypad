@@ -50,6 +50,7 @@ class Fake(Link):
         self.status: list[dict[str, Any]] = []
         self.log: list[dict[str, Any]] = []  # the transcript, kept the way the firmware does from feed messages
         self.feeds: list[dict[str, Any]] = []
+        self.toasts: list[dict[str, Any]] = []
 
     def close(self) -> None:
         self._closed.set()
@@ -80,6 +81,9 @@ class Fake(Link):
         elif t == "status":
             with self._lock:
                 self.status.append(m)
+        elif t == "toast":
+            with self._lock:
+                self.toasts.append(m)
         elif t == "feed":
             with self._lock:
                 self.feeds.append(m)

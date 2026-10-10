@@ -36,10 +36,12 @@ struct StatusModel {
     uint8_t n;
     SessionInfo s[MAX_SESSIONS];
     char sel[9];
-    bool pinned;
     uint8_t queue;
     bool paused;
     bool menu;            // Enter on the status screen opens "Send to Claude"
+    char queued[24];      // label of a saved prompt waiting for the shown session's next hook ("" = none)
+    uint8_t nQuick;       // keys 1-3 on the status screen send these saved prompts at once
+    char quick[MAX_QUICK][16];
     uint8_t nLog;
     LogEntry log[MAX_LOG]; // transcript of the selected session, oldest first
     char *logText;         // LOG_POOL bytes (PSRAM)
@@ -63,12 +65,11 @@ struct ScreenModel {
     char q[128];          // the question above the options ("Do you want to proceed?")
     uint8_t nItems;
     char items[MAX_ITEMS][64];
-    char notes[MAX_ITEMS][48];   // prompt: a dim description after each suggestion
     bool picked[MAX_ITEMS];
     char esc[12];         // what Esc does: "pc" (leave it to the computer) or "back"
     uint32_t shownAt;
     uint32_t expiresAt;   // 0 = no timeout
-    int8_t cursor;        // highlighted option; -1 = the body has focus (4/8 scroll it); nItems = Submit (multi)
+    int8_t cursor;        // highlighted option; -1 = the body has focus (the knob scrolls it); nItems = Submit (multi)
     uint8_t top;          // first visible option (set by the renderer)
     int16_t scroll;       // first visible body line
     int16_t maxScroll;    // set by the renderer
@@ -87,6 +88,8 @@ struct Model {
     bool paired;
 
     bool wifiHost;            // the host on Wi-Fi has said hello and is alive
+    uint32_t screenEndedAt;   // millis() when a request screen last went away (a stray press right after must not act on the status screen)
+    uint32_t lastHostAt;      // millis() of the last message from a host (0 = none since power-up)
     WifiState wifi;
     char ssid[33];
     char ip[16];

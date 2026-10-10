@@ -1,9 +1,10 @@
 // Keypad simulator: the real app.cpp, ui.cpp and text/ run on the PC against stand-ins for the hardware.
-// It reads commands on stdin and answers on stdout, so a script, a test or a web page can drive it:
+// It reads commands on stdin and answers on stdout, so a script or a test can drive it:
 //   msg <json>        a message from the host (screen, status, settings, ...)
 //   key <n> [ms]      press and release key n (0 = encoder click) after holding it for ms
 //   down <n> / up <n> press / release key n
 //   turn <steps>      turn the encoder (+ clockwise)
+//   spin <n> <ms>     n detents, one at a time, <ms> apart (a short gap is a fast hand)
 //   wait <ms>         let simulated time pass
 //   backlight          prints "BACKLIGHT <percent>", the brightness the keypad would set
 //   power usb|battery  the power source (a wire never dims the screen)
@@ -35,9 +36,17 @@ void linkPoll() {}
 bool linkSend(Src, const char *json, size_t len) { printf("TX %.*s\n", (int)len, json); fflush(stdout); return true; }
 void linkConfigure(const Stored &) {}
 bool linkNetAuthed() { return true; }
+const char *linkHost() { return "h-sim"; }
+void linkNamePeer(const char *) {}
 WifiStatus linkWifi() { return {WifiState::Up, "192.168.1.40", -52}; }
 
-void storeLoad(Stored &s) { memset(&s, 0, sizeof s); s.brightness = 80; strcpy(s.name, "Sim keypad"); }
+void storeLoad(Stored &s) {
+    memset(&s, 0, sizeof s);
+    s.brightness = 80;
+    strcpy(s.name, "Sim keypad");
+    uint8_t key[32] = {};
+    storeSetHost(s, "h-sim", key);   // a paired keypad
+}
 void storeSave(const Stored &) {}
 
 bool otaBegin(size_t, const char *, const char **) { return false; }
@@ -67,7 +76,6 @@ bool inputNext(KeyEvent &ev) {
     return true;
 }
 int32_t inputTakeSteps() { int32_t s = steps; steps = 0; return s; }
-bool inputHeld(uint8_t key, uint32_t ms) { return key < 16 && down_[key] && sim_now - pressedAt[key] >= ms; }
 
 static void push(uint8_t key, KeyAction a) {
     bool others = false;
@@ -116,6 +124,10 @@ int main() {
             push(k, KeyAction::Press); step(hold); push(k, KeyAction::Release); step(200);
         } else if (!strncmp(line, "down ", 5)) { push(atoi(line + 5), KeyAction::Press); step(60);
         } else if (!strncmp(line, "up ", 3)) { push(atoi(line + 3), KeyAction::Release); step(60);
+        } else if (!strncmp(line, "spin ", 5)) {
+            int n = 0, gap = 200;   // "spin <detents> <ms between them>": one detent at a time, like a hand (negative: counter-clockwise)
+            sscanf(line + 5, "%d %d", &n, &gap);
+            for (int i = 0, d = n < 0 ? -1 : 1; i < (n < 0 ? -n : n); i++) { steps += d; step(gap); }
         } else if (!strncmp(line, "turn ", 5)) { steps += atoi(line + 5); step(200);
         } else if (!strncmp(line, "wait ", 5)) { step(atoi(line + 5));
         } else if (!strncmp(line, "shot ", 5)) {

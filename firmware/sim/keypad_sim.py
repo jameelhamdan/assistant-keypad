@@ -119,6 +119,10 @@ class Sim:
     def turn(self, steps: int):
         self._cmd(f"turn {steps}")
 
+    def spin(self, detents: int, gap_ms: int):
+        """Turns the knob one detent at a time, gap_ms apart (+ clockwise): a short gap is a fast hand."""
+        self._cmd(f"spin {detents} {gap_ms}")
+
     def wait(self, ms: int):
         self._cmd(f"wait {ms}")
 
