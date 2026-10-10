@@ -40,7 +40,7 @@ def test_hello_handshake_and_a_usb_link_never_replaces_the_working_link(home):
         assert time.time() < deadline, "no handshake"
         time.sleep(0.005)
     c = hub.get("kp-000001")
-    assert c.live and c.hello["v"] == 3 and c.hello["fw"] == "fake"
+    assert c.live and c.hello["v"] == 4 and c.hello["fw"] == "fake"
     usb = fakemod.Fake("kp-000001")
     usb.kind = "usb"  # a cable plugged in for power while Wi-Fi works
     assert hub.serve(usb) is True and hub.get("kp-000001") is c

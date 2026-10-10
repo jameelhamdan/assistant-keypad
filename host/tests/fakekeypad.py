@@ -22,7 +22,7 @@ def first_key(s: dict[str, Any]) -> dict[str, Any]:
         return {"key": 7, "act": "submit", "sel": [0]}
     if not s.get("items"):
         return {"key": 5, "act": s.get("esc", "")}
-    return {"key": 1, "act": "pick", "idx": 0}
+    return {"key": 7, "act": "pick", "idx": 0}
 
 
 def press_label(label: str) -> Policy:

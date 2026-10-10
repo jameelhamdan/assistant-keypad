@@ -20,11 +20,10 @@ QUICK_TIMEOUT = 15
 KEEP_BACKUPS = 5
 
 # event -> (waits for a key press, tool matcher). The hooks only decide; the live feed comes from the transcript.
-# PreToolUse is only for AskUserQuestion. PostToolUse runs after every tool call, and only to hand
-# Claude a prompt sent from the keypad while it works (it lands with the next tool result).
+# PreToolUse is only for AskUserQuestion.
 EVENTS = {
     "SessionStart": (False, ""), "SessionEnd": (False, ""), "UserPromptSubmit": (False, ""),
-    "PreToolUse": (True, "AskUserQuestion"), "PostToolUse": (False, ""),
+    "PreToolUse": (True, "AskUserQuestion"),
     "PermissionRequest": (True, ""), "Stop": (True, ""),
 }
 

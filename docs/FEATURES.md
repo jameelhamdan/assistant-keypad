@@ -7,14 +7,14 @@ Everything Keypad does today. **Status** says how far each feature has been chec
 | Feature | What it does | Status |
 |---|---|---|
 | Live transcript | The selected Claude Code session: your prompts, Claude's text laid out as Markdown (bold, code, dim, lists), tool calls, errors, elapsed time, permission mode | HW, Sim |
-| Number keys 1–3 | Pick option 1–3 on any dialog at once; tick options on multi-select | HW, Sim |
-| Knob | Turn: move the cursor, scroll long text (faster when turned fast; always one row per click in an option list). Press: Enter | Sim (acceleration feel: untested on HW) |
-| Key 7 / Enter | Select the highlighted option, tick/submit on multi-select, open the saved-prompt list on the status screen | HW, Sim |
-| Key 5 / Esc | "Done" on the Claude-finished screen; takes back a queued saved prompt on the status screen; does nothing on a decision | HW, Sim |
-| Key 6 | Session list; keys 1–3 jump to a session | Sim |
-| Keys 1, 2, 3, 4, 8 on the status screen | Send saved prompts 1–5 to the shown session in one press (guarded for 1.5 s after a dialog) | HW, Sim |
+| Keys 1, 2, 3, 4, 8 on the status screen | 1 pause/resume, 2 next session, 3 "ask when finished" (always / only when away / never), 4 brightness, 8 "Claude finished" alert on/off. Never active on a dialog | HW, Sim, Test |
+| Knob | Turn: move the cursor, scroll long text (faster when turned fast; always one row per click in an option list). Press: Enter, the way to choose an option | Sim (acceleration feel: untested on HW) |
+| Key 7 / Enter | Select the highlighted option, tick/submit on multi-select; on the status screen, open the model and effort sliders | HW, Sim |
+| Model and effort sliders | Key 7 on the status screen: the knob moves between the two sliders, a press lets it change the value, a second press saves it to the project's `.claude/settings.local.json` for its next session; Esc keeps the old value | Test, Sim |
+| Key 5 / Esc | "Done" on the Claude-finished screen; jumps to the newest line on the status screen; does nothing on a decision | HW, Sim |
+| Key 6 | Session list; the knob walks it, press shows the session | Sim |
 | Dialog screens | Permission (edits shown as a coloured diff, scrollable body), single question, multi-select, "Claude finished" prompt list, countdown, "+N waiting" | HW, Sim |
-| Status screen | Spinner with timer, session state, permission-mode label, paused banner, queued-prompt line, toasts | HW, Sim |
+| Status screen | Spinner with timer, session state, permission-mode label, paused banner, toasts | HW, Sim |
 | "Waiting for your computer" screen | Wi-Fi state, how long ago the PC was last seen | Sim |
 | Dimming | Dims on battery when idle; the next key only wakes it; requests and toasts wake it fully | Sim |
 | Safety rules | Press counts only if clean (no other key held) and ≥150 ms after its screen appeared; answered once per screen; stale answers are repeated, not re-asked | HW, Sim |
@@ -26,13 +26,12 @@ Everything Keypad does today. **Status** says how far each feature has been chec
 | Permission prompts | Yes / "Yes, don't ask again…" / No on the keypad; the hook returns allow/deny | HW, Sim |
 | Session-only "don't ask again" | Option `always_for_session` makes the rule last only for the Claude Code session | Test |
 | Questions (`AskUserQuestion`) | Single and multi-select answered on the keypad, with option descriptions; an "Other…" row hands free text back to the PC | HW, Sim |
-| Claude finished | *continue* (keeps Claude working) or a saved prompt; asked only when you have been away from the PC for a while (`ask_when_finished`: always / only when away / never) | Sim |
+| Claude finished | *continue* (keeps Claude working); asked only when you have been away from the PC for a while (`ask_when_finished`: always / only when away / never) | Sim |
 | Light-up on finish | A toast wakes the keypad when Claude finishes and nothing is asked on it (`notify_when_finished`) | Sim |
-| Saved prompts | Up to 16 prompts you define; six defaults on a first run (Tests, Commit, Review, Explain, Summary, Clear); queued for the session: delivered with its next tool result, stop, or your next prompt | HW, Sim |
 | Answered in the terminal first | The keypad dialog closes by itself | Test |
 | Fallback, never auto-approve | Paused, unreachable, no answer in 5 minutes (`timeout`), or a lost keypad past a 20 s grace: Claude Code asks in the terminal | Sim, Test |
 | Transcript privacy | Tool output and file contents are not read into the feed; secrets in prompts are redacted | Test |
-| Hooks installer | Hooks: SessionStart/End, UserPromptSubmit, PreToolUse (AskUserQuestion only), PostToolUse (delivers saved prompts), PermissionRequest, Stop. Adds/removes only its own hooks in `~/.claude/settings.json` (backup first, exact round trip), raises Claude Code's Stop-hook cap to 20 | Test, HW (installed) |
+| Hooks installer | Hooks: SessionStart/End, UserPromptSubmit, PreToolUse (AskUserQuestion only), PermissionRequest, Stop. Adds/removes only its own hooks in `~/.claude/settings.json` (backup first, exact round trip), raises Claude Code's Stop-hook cap to 20 | Test, HW (installed) |
 
 ## 3. Sessions
 
@@ -62,10 +61,9 @@ Everything Keypad does today. **Status** says how far each feature has been chec
 |---|---|---|
 | Status icon and tooltip | Colour shows what needs you; shows the shown session and keypad count | HW |
 | Keypads menu | Rename, Set up / change Wi-Fi, Update firmware (over Wi-Fi, with progress), Use keypad here, Forget | Test, HW (firmware via cable) |
-| Sessions menu | Pick the session the keypad shows; send a saved prompt to it | Test |
+| Sessions menu | Pick the session the keypad shows | Test |
 | Pause keypad | Decisions stay on the PC | Test |
 | Options | Ask when finished (Always / Only when away / Never), light up on finish, session-only "don't ask again", update automatically | Test |
-| Saved prompts editor | Add, edit, move, remove; "Add the suggested prompts" | Test |
 | Advanced | Edit settings file, open logs folder, check for updates, version | Test |
 | Claude Code integration and Start at login | Toggles; login item is a Task Scheduler task (Windows) or LaunchAgent (macOS), restarted on crash | HW (Windows), Test |
 | Uninstall (macOS) | Removes hooks and login item, then quits | Untested |

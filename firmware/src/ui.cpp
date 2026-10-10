@@ -240,7 +240,7 @@ void fmtElapsed(char *out, size_t n, uint32_t ms) {
     else snprintf(out, n, "%uh %um", (unsigned)(s / 3600), (unsigned)(s / 60 % 60));
 }
 
-// Bottom hint line in the dim "? for shortcuts" style, or a toast / sent note.
+// Bottom hint line in the dim style, or a toast / sent note.
 void hintLine(const Model &m, const char *hint) {
     int16_t y = 170 - SMALL.line - 2;
     uint32_t now = millis();
@@ -556,20 +556,14 @@ void drawStatus(Model &m) {
         modeX -= 6;
     }
     char hint[96] = "";
-    for (uint8_t i = 0; i < st.nQuick; i++) {   // saved prompts on keys 1-3: the most useful hint comes first
-        size_t n = strlen(hint);
-        snprintf(hint + n, sizeof(hint) - n, "%u %s  ", i < DIRECT_PICKS ? i + 1 : i == 3 ? KEY_QUICK_4 : KEY_QUICK_5, st.quick[i]);
-    }
-    {
-        size_t n = strlen(hint);
-        snprintf(hint + n, sizeof(hint) - n, "%s%s%s", st.n > 1 ? "6 sessions  " : "", st.menu ? "7 more  " : "",
+    if ((millis() / 3500) & 1) {   // two pages of keys, turned every few seconds
+        snprintf(hint, sizeof(hint), "%s%s%s", st.n > 1 ? "6 sessions  " : "", st.tune.nModel ? "7 model  " : "",
                  st.nLog ? "knob scroll" : "");
+    } else {
+        snprintf(hint, sizeof(hint), "1 pause  2 next  3 ask  4 dim  8 alert");
     }
     // Paused must be visible even while the spinner runs: it is the one state where nothing reaches the keypad.
-    if (st.queued[0]) {   // a saved prompt waits for Claude's next step: say so, and how to take it back
-        snprintf(hint, sizeof(hint), "queued: %s  5 cancel", st.queued);
-        fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->permission);
-    } else if (st.paused) fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, "paused: answers on the PC", T->warning);
+    if (st.paused) fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, "paused: answers on the PC  1 resume", T->warning);
     else fit(SMALL, X0 + 2, hy, (modeX - X0 - 2) / SMALL.cw, hint, T->dim);
 }
 
@@ -624,7 +618,43 @@ void drawSessions(const Model &m) {
     }
     if (top > 0) gTri(320 - X0 - 6, y0 - 1, true, T->dim);
     if (top + ROWS < rowsTotal) gTri(320 - X0 - 6, y0 + ROWS * 16 - 6, false, T->dim);
-    hintLine(m, "knob move  7 show  1-3 jump  5 back");
+    hintLine(m, "knob move  7 show  5 back");
+}
+
+// One slider: label, a track with a tick per choice and a knob at the chosen one, the choice's name.
+void slider(int16_t y, const char *label, const char (*items)[12], uint8_t n, int idx, bool cur, bool editing) {
+    uint16_t c = editing ? T->claude : cur ? T->text : T->dim;
+    if (cur) gChevron(X0, y, T->claude);
+    text(MONO, X0 + 2 * MONO.cw, y, label, c, cur);
+    int16_t x0 = X0 + 10 * MONO.cw, w = 130;
+    int16_t ty = y + 8;
+    int span = n > 1 ? n - 1 : 1;
+    cv->drawFastHLine(x0, ty, w, T->faint);
+    for (uint8_t i = 0; i < n; i++) cv->drawFastVLine(x0 + w * i / span, ty - 3, 7, T->faint);
+    int16_t kx = x0 + w * idx / span;
+    cv->drawFastHLine(x0, ty, kx - x0, c);
+    cv->fillCircle(kx, ty, editing ? 6 : 5, c);
+    int16_t vx = x0 + w + 14;
+    fit(MONO, vx, y, (320 - X0 - vx) / MONO.cw, items[idx], c, cur);
+}
+
+// The model and effort sliders (7 on the status screen): what the project's next session starts with.
+void drawTune(const Model &m) {
+    const TuneModel &tn = m.status.tune;
+    int16_t right = indicators(m, 3);
+    gStar(X0, 3, T->claude, 4);
+    text(MONO, X0 + 2 * MONO.cw, 3, "Next session", T->text, true);
+    const SessionInfo *s = m.view < m.status.n ? &m.status.s[m.view] : nullptr;
+    if (s && s->project[0]) {
+        int cells = utf8Length(s->project);
+        if (cells > 16) cells = 16;
+        fit(SMALL, right - cells * SMALL.cw, 6, cells, s->project, T->dim);
+    }
+    rule(22, T->faint);
+    slider(44, "Model", tn.model, tn.nModel, m.tuneM, m.tuneRow == 0, m.tuneEdit && m.tuneRow == 0);
+    slider(84, "Effort", tn.effort, tn.nEffort, m.tuneE, m.tuneRow == 1, m.tuneEdit && m.tuneRow == 1);
+    text(SMALL, X0 + 2 * MONO.cw, 120, "Applies to the next session in this project", T->dim);
+    hintLine(m, m.tuneEdit ? "knob change  7 save  5 cancel" : "knob move  7 edit  5 back");
 }
 
 // "+2  project 4:59": requests waiting behind this one, the project and the
@@ -746,13 +776,13 @@ void drawDialog(Model &m) {
     char hint[64];
     const char *esc = escHint(sc);
     if (sc.cursor < 0) snprintf(hint, sizeof(hint), "knob scroll  7 back to the options%s", esc);
-    else if (multi) snprintf(hint, sizeof(hint), "1-3 tick  knob move  7 tick/submit%s", esc);
-    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  knob up: read all%s", esc);
-    else snprintf(hint, sizeof(hint), "1-3 pick  knob move  7 select%s", esc);
+    else if (multi) snprintf(hint, sizeof(hint), "knob move  7 tick/submit%s", esc);
+    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "7 select  knob up: read all%s", esc);
+    else snprintf(hint, sizeof(hint), "knob move  7 select%s", esc);
     hintLine(m, hint);
 }
 
-// Your turn (Claude finished, Send to Claude): the transcript, then the
+// Your turn (Claude finished): the transcript, then the
 // choices as numbered options with the ❯ cursor, like every other dialog.
 void drawPromptScreen(Model &m) {
     ScreenModel &sc = m.screen;
@@ -796,8 +826,8 @@ void drawPromptScreen(Model &m) {
     const char *esc = escHint(sc);
     char hint[64];
     if (focus) snprintf(hint, sizeof(hint), "knob scroll  7 back to the options%s", esc);
-    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "1-3 pick  7 select  knob up: read back%s", esc);
-    else snprintf(hint, sizeof(hint), "1-3 pick  knob move  7 select%s", esc);
+    else if (sc.maxScroll > 0 && sc.cursor == 0) snprintf(hint, sizeof(hint), "7 select  knob up: read back%s", esc);
+    else snprintf(hint, sizeof(hint), "knob move  7 select%s", esc);
     hintLine(m, hint);
 }
 
@@ -855,6 +885,7 @@ void uiRender(Model &m) {
         case Mode::Waiting: drawWaiting(m); break;
         case Mode::Status: drawStatus(m); break;
         case Mode::Sessions: drawSessions(m); break;
+        case Mode::Tune: drawTune(m); break;
         case Mode::Screen:
             if (m.screen.tpl == Tpl::Prompt) drawPromptScreen(m);
             else drawDialog(m);

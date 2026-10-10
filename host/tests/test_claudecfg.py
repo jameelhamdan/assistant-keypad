@@ -35,7 +35,7 @@ def test_only_decision_hooks_are_installed_and_pretooluse_is_matched(tmp_path, m
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     claudecfg.install("/x/keypad")
     hooks = json.loads((tmp_path / "settings.json").read_text())["hooks"]
-    assert sorted(hooks) == ["PermissionRequest", "PostToolUse", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]
+    assert sorted(hooks) == ["PermissionRequest", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"]
     assert hooks["PreToolUse"][0]["matcher"] == "AskUserQuestion"  # not run on every tool call
     assert "matcher" not in hooks["Stop"][0]
 

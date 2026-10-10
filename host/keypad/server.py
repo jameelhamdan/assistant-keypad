@@ -30,7 +30,6 @@ class Server:
         r("GET", "/status", self.status)
         r("POST", "/pause", self.pause)
         r("POST", "/quit", self.do_quit)
-        r("POST", "/shortcut", self.shortcut)
         r("POST", "/session", self.session)
         r("GET", "/config", lambda b, **_: self.a.config().to_dict())
         r("PUT", "/config", self.put_config)
@@ -84,14 +83,6 @@ class Server:
 
     def pause(self, b: dict, **_) -> dict:
         self.a.set_paused(bool(b.get("paused")))
-        return ok()
-
-    def shortcut(self, b: dict, **_) -> dict:
-        sid = str(b.get("session") or "")
-        if not sid:
-            cur = self.a.sessions.current()
-            sid = cur.id if cur else ""
-        threading.Thread(target=self.a.shortcuts.queue, args=(int(b.get("index", -1)), sid), daemon=True).start()
         return ok()
 
     def session(self, b: dict, **_) -> dict:

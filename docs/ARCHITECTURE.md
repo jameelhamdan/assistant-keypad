@@ -15,9 +15,9 @@ One program, `keypad`. The tray hosts the agent; `keypad agent` runs it alone; `
 |---|---|
 | `hook.py` | the hook command: standard library only (it starts on every prompt and decision), forwards a slimmed payload to the agent, prints `{}` on any failure |
 | `ipc.py`, `server.py` | agent API on `127.0.0.1`, random port, token in `agent.json`; length-prefixed JSON; routes in `server.py` |
-| `core/agent.py` | wires sessions, dialogs, keypads, settings; pushes `status` and `feed` to keypads |
-| `core/hooks.py` | decisions: permission, `AskUserQuestion`, stop (continue / saved prompt) |
-| `core/shortcuts.py` | saved prompts: the list on the keypad; queued for the session and delivered with its next tool result (or stop), or your next prompt |
+| `core/agent.py` | wires sessions, dialogs, keypads, settings; pushes `status` and `feed` to keypads; carries out the status keys' quick actions (`act`: pause, ask when finished, brightness, alert) |
+| `core/tune.py` | model and effort sliders: reads and writes `model` / `effortLevel` in the shown session's project `.claude/settings.local.json` (applies to its next session) |
+| `core/hooks.py` | decisions: permission, `AskUserQuestion`, stop (continue) |
 | `updater.py` | checks GitHub releases, downloads the installer for this OS, verifies its SHA-256, starts it (silent setup on Windows, a small script on macOS) and quits; installed builds only |
 | `core/stats.py` | health counters (hook times, ignored presses, reconnects) shown by `keypad status` |
 | `core/dialogs.py` | one dialog owns the keypads at a time, FIFO across sessions; validates presses |
@@ -37,7 +37,7 @@ A terminal: it draws what the host sends and owns navigation and press safety. `
 
 - **Feed.** The agent polls each session's transcript file (0.3 s). The selected session's transcript is sent to each keypad as a `feed` whenever it changes. Thinking, tool output and file contents are never read into it.
 - **Decision.** Claude Code runs the hook → the agent queues a dialog → `screen` goes to the keypads → a `press` returns → the hook prints the decision. The dialog ends on a press, on `behavior.timeout`, when the keypad has been gone for 20 s (a shorter drop shows the screen again on reconnect), or when the transcript shows Claude moved on (answered in the terminal). Any end other than a press returns `{}` and Claude Code asks itself.
-- **Stop.** When Claude finishes and you have been away for `ask_when_finished` seconds, the keypad offers *continue* and saved prompts; the hook answers `block` with an instruction. Claude Code's own cap (set by the installer to 20) limits consecutive continues.
+- **Stop.** When Claude finishes and you have been away for `ask_when_finished` seconds, the keypad offers *continue*; the hook answers `block` with an instruction. Claude Code's own cap (set by the installer to 20) limits consecutive continues.
 - **Pairing.** Only over USB: the host sends Wi-Fi credentials, its id and a new 32-byte key; the keypad stores them in NVS. The host then finds the keypad by mDNS (last IP as fallback) and connects. USB ports are opened only while a keypad is being set up (tray -> Add keypad…).
 - **Login item.** launchd job / Task Scheduler task running `keypad tray --quiet`; restarted a minute after a crash, not after *Quit*.
 

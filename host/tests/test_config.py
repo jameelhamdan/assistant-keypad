@@ -13,7 +13,6 @@ def test_save_clamps_in_place(home):
 def test_round_trip(home):
     c = config.Config()
     c.behavior.timeout = 77
-    c.shortcuts = [config.Shortcut("Ship it", "Commit and push.")]
     config.save(c)
     raw = json.loads(config.config_path().read_text())
     assert raw["behavior"]["timeout"] == 77 and "answer_on" not in raw["behavior"]
@@ -25,7 +24,7 @@ def test_unknown_keys_are_ignored(home):
     config.config_path().parent.mkdir(parents=True, exist_ok=True)
     config.config_path().write_text('{"keys": {"allow": 2}, "behavior": {"timeout": 120, "nope": 1}}')
     c, err = config.load()
-    assert err is None and c.behavior.timeout == 120 and set(c.to_dict()) == {"behavior", "shortcuts"}
+    assert err is None and c.behavior.timeout == 120 and set(c.to_dict()) == {"behavior"}
 
 
 def test_damaged_state_moved_aside(home):

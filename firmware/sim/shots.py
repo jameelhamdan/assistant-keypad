@@ -13,19 +13,19 @@ out = Path(__file__).parent / "out"
 tiles: list[tuple[str, Image.Image]] = []
 with Sim() as kp:
     kp.msg(sc.HELLO); kp.msg(sc.SETTINGS)
-    kp.msg({"t": "status", "sessions": [], "sel": "", "queue": 0, "paused": False, "menu": False})
+    kp.msg({"t": "status", "sessions": [], "sel": "", "queue": 0, "paused": False})
     tiles.append(("no sessions", kp.image()))
-    quick = {"menu": True, "quick": ["Tests", "Commit", "Review", "Explain", "Summary"]}
     for mode in sc.MODES:
-        kp.msg({**sc.status(mode=mode), **(quick if mode == "default" else {})}); tiles.append((f"mode {mode}", kp.image()))
-    kp.msg({**sc.status(state="idle"), **quick, "queued": "Commit"}); tiles.append(("a saved prompt queued", kp.image()))
+        kp.msg(sc.status(mode=mode)); tiles.append((f"mode {mode}", kp.image()))
     kp.msg(sc.status(state="asking", queue=2)); tiles.append(("asking, 2 queued", kp.image()))
     kp.msg(sc.status(paused=True)); tiles.append(("paused", kp.image()))
+    kp.msg(sc.status(tune=sc.TUNE)); kp.key(7); kp.key(7); kp.turn(1); tiles.append(("model and effort (key 7)", kp.image()))
+    kp.key(5); kp.key(5)
     kp.msg(sc.status())
     for name, scr in sc.SCREENS.items():
         kp.msg(scr); tiles.append((name, kp.image()))
         kp.msg({"t": "close", "id": scr["id"], "why": "answered"})
-    kp.msg({**sc.status(menu=True), "quick": ["Tests", "Commit", "Review"]})
+    kp.msg(sc.status())
     kp.key(6); tiles.append(("sessions list (key 6)", kp.image()))
 w, h, pad, cols = 320 * 2, 170 * 2, 28, 3
 rows = (len(tiles) + cols - 1) // cols

@@ -7,9 +7,9 @@ import time
 import test_e2e_workflows as w
 import test_sim_e2e
 from conftest import SID
-from test_e2e_workflows import CWD, PERMISSION, SHORTCUTS, SID2, decision, prompt, start, toast_with, until
+from test_e2e_workflows import CWD, PERMISSION, SID2, decision, prompt, start, until
 
-from keypad import config, proto
+from keypad import proto
 from keypad.core.ctx import Ctx
 
 rig = test_sim_e2e.rig
@@ -38,7 +38,7 @@ def test_a_huge_command_is_clipped_and_still_answerable(rig):
     r.hook_async("p", "PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": cmd}})
     s = r.wait_screen()
     assert len(json.dumps(s)) < proto.MAX_DEVICE_MSG * 8
-    r.kp.key(1)
+    r.kp.pick(1)
     assert decision(r.result("p")) == "allow"
 
 
@@ -48,7 +48,7 @@ def test_unicode_emoji_and_rtl_text_do_not_break_a_screen(rig):
         "command": "echo 'héllo wörld 日本語 🚀 مرحبا'", "description": "Grüße ✓"}})
     r.wait_screen()
     r.kp.shot("unicode")
-    r.kp.key(1)
+    r.kp.pick(1)
     assert decision(r.result("p")) == "allow"
 
 
@@ -56,7 +56,7 @@ def test_an_empty_command_still_shows_a_permission(rig):
     r = rig()
     r.hook_async("p", "PermissionRequest", {"tool_name": "Bash", "tool_input": {}})
     r.wait_screen()
-    r.kp.key(2)
+    r.kp.pick(2)
     assert decision(r.result("p")) == "deny"
 
 
@@ -66,7 +66,7 @@ def test_an_mcp_tool_with_a_long_name_is_shown(rig):
                                            "tool_input": {"arg": "v" * 500, "n": 5, "nested": {"a": 1}}})
     s = r.wait_screen()
     assert s["title"]
-    r.kp.key(1)
+    r.kp.pick(1)
     assert decision(r.result("p")) == "allow"
 
 
@@ -75,7 +75,7 @@ def test_a_subagent_request_is_labelled(rig):
     r.hook_async("p", "PermissionRequest", {**PERMISSION, "agent_type": "reviewer"})
     s = r.wait_screen()
     assert "reviewer" in s["title"]
-    r.kp.key(1)
+    r.kp.pick(1)
     r.result("p")
 
 
@@ -84,7 +84,7 @@ def test_very_long_option_labels_are_clipped(rig):
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Pick?", "options": opts("A" * 400, "B" * 400)}]))
     s = r.wait_screen()
     assert all(len(i) <= proto.SCREEN_ITEM + 2 for i in s["items"])
-    r.kp.key(1)
+    r.kp.pick(1)
     assert r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"]["Pick?"] == "A" * 400  # the answer is the full label
 
 
@@ -93,7 +93,7 @@ def test_a_very_long_question_goes_in_the_scrollable_body(rig):
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Should we? " * 80, "options": opts("Yes", "No")}]))
     s = r.wait_screen()
     assert s["q"] == "" and "Should we?" in s["body"]
-    r.kp.key(2)
+    r.kp.pick(2)
     r.result("q")
 
 
@@ -105,7 +105,7 @@ def test_four_questions_are_all_asked(rig):
     r.hook_async("q", "PreToolUse", q_hook([{"question": f"Q{i}?", "options": opts("a", "b")} for i in range(4)]))
     for n in range(1, 5):
         r.wait_screen(n)
-        r.kp.key(1)
+        r.kp.pick(1)
     out = r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"]
     assert out == {f"Q{i}?": "a" for i in range(4)}
 
@@ -137,7 +137,7 @@ def test_duplicate_labels_answer_by_position(rig):
     r = rig()
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Which?", "options": opts("same", "same")}]))
     r.wait_screen()
-    r.kp.key(2)
+    r.kp.pick(2)
     assert r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"] == {"Which?": "same"}
 
 
@@ -145,7 +145,7 @@ def test_options_given_as_plain_strings_work(rig):
     r = rig()
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Which?", "options": ["red", "blue"]}]))
     r.wait_screen()
-    r.kp.key(2)
+    r.kp.pick(2)
     assert r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"] == {"Which?": "blue"}
 
 
@@ -158,9 +158,10 @@ def test_a_multi_select_returns_every_ticked_option_in_order(rig):
     r = rig()
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Which?", "multiSelect": True, "options": opts("a", "b", "c")}]))
     r.wait_screen()
-    r.kp.key(3)
-    r.kp.key(1)
-    r.kp.sim.turn(3)
+    r.kp.key(7)  # a
+    r.kp.sim.turn(2)
+    r.kp.key(7)  # c
+    r.kp.sim.turn(1)  # Submit
     r.kp.key(7)
     assert r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"] == {"Which?": "a, c"}
 
@@ -169,10 +170,12 @@ def test_a_multi_select_untick_then_submit(rig):
     r = rig()
     r.hook_async("q", "PreToolUse", q_hook([{"question": "Which?", "multiSelect": True, "options": opts("a", "b")}]))
     r.wait_screen()
-    r.kp.key(1)
-    r.kp.key(2)
-    r.kp.key(1)  # a off again
-    r.kp.sim.turn(2)
+    r.kp.key(7)  # a
+    r.kp.sim.turn(1)
+    r.kp.key(7)  # b
+    r.kp.sim.turn(-1)
+    r.kp.key(7)  # a off again
+    r.kp.sim.turn(2)  # Submit
     r.kp.key(7)
     assert r.result("q")["hookSpecificOutput"]["updatedInput"]["answers"] == {"Which?": "b"}
 
@@ -182,7 +185,7 @@ def test_the_question_tool_input_is_echoed_back_whole(rig):
     inp = {"questions": [{"question": "Which?", "header": "H", "options": opts("a", "b")}], "extra": {"keep": "me"}}
     r.hook_async("q", "PreToolUse", {"tool_name": "AskUserQuestion", "tool_input": inp})
     r.wait_screen()
-    r.kp.key(1)
+    r.kp.pick(1)
     upd = r.result("q")["hookSpecificOutput"]["updatedInput"]
     assert upd["extra"] == {"keep": "me"} and upd["questions"] == inp["questions"]
 
@@ -200,11 +203,11 @@ def test_a_forged_press_with_a_wrong_key_for_the_option_is_ignored(rig):
     r = rig()
     r.hook_async("p", "PermissionRequest", dict(PERMISSION))
     s = r.wait_screen()
-    _raw_press(r, id=s["id"], key=2, act="pick", idx=0)  # key 2 is option 2, not option 1
+    _raw_press(r, id=s["id"], key=2, act="pick", idx=0)  # a number key decides nothing
     time.sleep(0.3)
     assert "p" not in r.results
     assert r.agent.stats.view()
-    r.kp.key(1)
+    r.kp.pick(1)
     assert decision(r.result("p")) == "allow"
 
 
@@ -222,7 +225,7 @@ def test_a_press_with_out_of_range_index_is_ignored(rig):
     _raw_press(r, id=s["id"], key=7, act="pick", idx=-1)
     time.sleep(0.3)
     assert "p" not in r.results
-    r.kp.key(2)
+    r.kp.pick(2)
     assert decision(r.result("p")) == "deny"
 
 
@@ -231,15 +234,6 @@ def test_a_session_message_with_an_unknown_id_changes_nothing(rig):
     start(r)
     r.agent.message(r.hub.conns()[0], {"t": "session", "sid": "nope", "act": "select"})
     assert r.agent.sessions.current().id == SID
-
-
-def test_a_status_press_for_a_missing_prompt_index_is_ignored(rig):
-    r = rig(shortcuts=SHORTCUTS)
-    start(r)
-    r.agent.message(r.hub.conns()[0], {"t": "press", "id": "status", "act": "quick", "idx": 40})
-    r.agent.message(r.hub.conns()[0], {"t": "press", "id": "status", "act": "quick", "idx": -3})
-    time.sleep(0.4)
-    assert prompt(r) == {}
 
 
 # ---- queue and FIFO ----
@@ -254,7 +248,7 @@ def test_three_requests_from_three_sessions_are_answered_in_arrival_order(rig):
     for n, sid in enumerate(("aaaa-1", "bbbb-2", "cccc-3")):
         s = r.wait_screen(n + 1)
         assert s["project"] == f"p{n}"
-        r.kp.key(1)
+        r.kp.pick(1)
         assert decision(r.result(sid)) == "allow"
         r.kp.wait(300)
 
@@ -266,10 +260,11 @@ def test_parallel_requests_from_one_session_are_shown_one_by_one(rig):
     r.hook_async("b", "PermissionRequest", dict(PERMISSION))
     time.sleep(0.3)
     assert len(r.kp.screens()) == 1
-    r.kp.key(2)
+    r.kp.pick(2)
     assert decision(r.result("a")) == "deny"
     r.wait_screen(2)
-    r.kp.key(1)
+    r.kp.wait(400)  # a press right after a screen appears is ignored
+    r.kp.pick(1)
     assert decision(r.result("b")) == "allow"
 
 
@@ -281,7 +276,7 @@ def test_a_request_that_waits_in_line_longer_than_its_timeout_goes_to_the_pc(rig
     r.hook_async("b", "PermissionRequest", {**PERMISSION, "session_id": SID2})
     assert r.result("b") == {}
     assert "a" not in r.results, "the one on screen is unaffected"
-    r.kp.key(1)
+    r.kp.pick(1)
     r.result("a")
 
 
@@ -302,7 +297,7 @@ def test_session_start_twice_resets_the_continue_count(rig):
     w.away(r)
     r.hook_async("s", "Stop", {"last_assistant_message": "Done."})
     r.wait_screen()
-    r.kp.key(1)
+    r.kp.pick(1)
     r.result("s")
     assert r.agent.sessions.continues(SID) == 1
     start(r)
@@ -349,7 +344,7 @@ def test_an_unreadable_transcript_is_flagged_but_the_keypad_keeps_working(rig, t
     until(lambda: any(not s["feed_ok"] for s in r.agent.snapshot()["sessions"]), "feed flagged unreadable")
     r.hook_async("p", "PermissionRequest", dict(PERMISSION))
     r.wait_screen()
-    r.kp.key(1)
+    r.kp.pick(1)
     assert decision(r.result("p")) == "allow"
 
 
@@ -373,80 +368,6 @@ def test_agent_start_picks_up_running_sessions(rig, tmp_path):
     assert r.agent.sessions.get("abcd1234-0000") is not None
 
 
-# ---- saved prompts ----
-
-
-def test_a_second_queued_prompt_replaces_the_first(rig):
-    r = rig(shortcuts=SHORTCUTS)
-    start(r)
-    w.idle_status(r)
-    r.kp.key(1)
-    toast_with(r, "Tests")
-    r.kp.wait(2000)
-    r.kp.key(2)
-    toast_with(r, "Commit")
-    out = prompt(r)["hookSpecificOutput"]["additionalContext"]
-    assert "Commit the current changes" in out and "Run the project's tests" not in out
-    assert prompt(r) == {}
-
-
-def test_no_saved_prompts_means_no_menu_and_keys_do_nothing(rig):
-    r = rig()
-    start(r)
-    r.agent.push_status()
-    r.kp.wait(2000)
-    for k in (1, 2, 3, 4, 8):
-        r.kp.key(k)
-    time.sleep(0.3)
-    assert not r.kp.toasts() and prompt(r) == {}
-
-
-def test_sixteen_saved_prompts_all_fit_and_the_quick_ones_are_the_first_five(rig):
-    r = rig(shortcuts=[config.Shortcut(f"P{i}", f"do {i}") for i in range(16)])
-    start(r)
-    w.wait_status(r, lambda m: m.get("quick") == [f"P{i}" for i in range(proto.MAX_QUICK)], "five quick prompts")
-    r.kp.wait(2000)
-    r.kp.key(7)
-    s = r.wait_screen()
-    assert len(s["items"]) == 16
-    r.kp.key(3)
-    toast_with(r, "P2")
-
-
-def test_a_saved_prompt_with_unicode_is_delivered_intact(rig):
-    r = rig(shortcuts=[config.Shortcut("Résumé ✓", "Fasse ein Résumé 日本語")])
-    start(r)
-    w.idle_status(r)
-    r.kp.key(1)
-    toast_with(r, "Résumé")
-    assert "Fasse ein Résumé 日本語" in prompt(r)["hookSpecificOutput"]["additionalContext"]
-
-
-def test_a_saved_prompt_picked_on_the_finished_screen_continues_with_it(rig):
-    r = rig(shortcuts=SHORTCUTS)
-    w.away(r)
-    r.hook_async("s", "Stop", {"last_assistant_message": "Done."})
-    r.wait_screen()
-    r.kp.key(3)  # "Commit"? items: continue, Tests, Commit, Review -> key 3 = Commit
-    out = r.result("s")
-    assert out["decision"] == "block" and "Commit the current changes" in out["reason"]
-
-
-def test_a_prompt_queued_while_the_finished_screen_waits_its_turn_goes_straight_in(rig):
-    r = rig(shortcuts=SHORTCUTS)
-    w.away(r)
-    r.hook_async("p", "PermissionRequest", dict(PERMISSION))
-    r.wait_screen()
-    r.hook_async("s", "Stop", {"last_assistant_message": "Done."})
-    until(lambda: r.agent.dialogs.queued() == 1, "the stop waits behind the permission")
-    r.agent.shortcuts._pending[SID] = (SHORTCUTS[0], time.monotonic())
-    r.kp.key(1)
-    r.result("p")
-    out = r.result("s")
-    assert out["decision"] == "block" and "Run the project's tests" in out["reason"]
-    assert len(r.kp.screens()) == 1, "no finished screen was needed"
-
-
 # ---- the finished screen ----
 
 
@@ -464,7 +385,7 @@ def test_stop_without_a_message_still_works(rig):
     w.away(r)
     r.hook_async("s", "Stop", {})
     r.wait_screen()
-    r.kp.key(1)
+    r.kp.pick(1)
     assert r.result("s")["decision"] == "block"
 
 
@@ -501,15 +422,14 @@ def test_a_request_while_the_keypad_is_gone_waits_for_it_within_the_grace(rig):
     threading.Thread(target=r.hub.serve, args=(kp2,), daemon=True).start()
     until(lambda: any(m["t"] == "screen" and m["id"] == s["id"] for m in kp2.sent), "request re-shown", 8)
     kp2.wait(600)
-    kp2.key(2)
+    kp2.pick(2)
     assert decision(r.result("p")) == "deny"
     kp2.close_sim()
 
 
 def test_snapshot_describes_the_keypad_and_sessions(rig):
-    r = rig(shortcuts=SHORTCUTS)
+    r = rig()
     start(r)
     snap = r.agent.snapshot()
     assert snap["keypads"] and snap["sessions"][0]["project"] == "money-mind"
-    assert snap["shortcuts"] == ["Tests", "Commit", "Review", "Explain", "Summary"][: len(snap["shortcuts"])] or snap["shortcuts"]
     json.dumps(snap)

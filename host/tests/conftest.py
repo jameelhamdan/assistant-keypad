@@ -66,10 +66,3 @@ def env(home):
 
 def behavior(out):
     return out.get("hookSpecificOutput", {}).get("decision", {}).get("behavior", "")
-
-
-def with_shortcuts(e, n=3):
-    cfg = config.Config()
-    cfg.shortcuts = [config.Shortcut(f"Prompt {i}", f"Do thing number {i}.") for i in range(n)]
-    e.a.set_config(cfg)
-    return cfg

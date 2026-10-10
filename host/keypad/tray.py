@@ -250,8 +250,7 @@ class Tray:
             out += self._session_items()
             out += [SEP, Item("Pause keypad", self.act(lambda: call("POST", "/pause", {"paused": not s.get("paused")})),
                               checked=lambda _: bool(self.snap.get("paused"))),
-                    Item("Options", Menu(*self._option_items())),
-                    Item("Saved prompts", Menu(*self._shortcut_items()))]
+                    Item("Options", Menu(*self._option_items()))]
         if rel := self.updater.available:
             out += [SEP, Item(f"Update to {rel.version}…", self.act(self.update_now, True))]
         out += [SEP,
@@ -297,18 +296,13 @@ class Tray:
 
     def _session_items(self) -> list:
         """The sessions the keypad mirrors: click one to show it on the keypad."""
-        Item, Menu = self.pystray.MenuItem, self.pystray.Menu
-        s = self.snap
-        on = synced(s)
+        Item = self.pystray.MenuItem
+        on = synced(self.snap)
         if not on:
             return [Item("No Claude Code sessions", None, enabled=False)]
         out = [Item(f"{session_label(x)} · {state_word(x.get('state', ''))}",
                     self.act(lambda sid=x["id"]: call("POST", "/session", {"id": sid})),
                     checked=lambda _, sid=x["id"]: self.snap.get("current") == sid, radio=True) for x in on]
-        shortcuts = s.get("shortcuts", [])
-        if shortcuts and s.get("current"):
-            out.append(Item("Send to the shown session", Menu(*[
-                Item(label, self.act(lambda i=i: call("POST", "/shortcut", {"index": i}))) for i, label in enumerate(shortcuts)])))
         return out
 
     def _option_items(self) -> list:
@@ -320,27 +314,6 @@ class Tray:
             Item(label, self.act(lambda v=v: self.edit_config(lambda cfg: _set_path(cfg, ("behavior", "ask_when_finished"), v))),
                  radio=True, checked=lambda _, is_it=is_it: is_it(_get_path(self.cfg, ("behavior", "ask_when_finished"))))
             for v, label, is_it in STOP_PRESETS])))
-        return out
-
-    def _shortcut_items(self) -> list:
-        Item, Menu = self.pystray.MenuItem, self.pystray.Menu
-        shortcuts = self.cfg.get("shortcuts", [])
-        out = [Item("Add saved prompt…", self.act(lambda: self.edit_shortcut(None), True),
-                    enabled=len(shortcuts) < config.MAX_SHORTCUTS)]
-        missing = [d for d in config.default_shortcuts() if d.label not in {s.get("label") for s in shortcuts}]
-        if missing and len(shortcuts) + len(missing) <= config.MAX_SHORTCUTS:
-            out.append(Item("Add the suggested prompts", self.act(lambda: self.edit_config(
-                lambda cfg: cfg.setdefault("shortcuts", []).extend(
-                    {"label": d.label, "prompt": d.prompt} for d in config.default_shortcuts()
-                    if d.label not in {s.get("label") for s in cfg["shortcuts"]})))))
-        if shortcuts:
-            out.append(self.pystray.Menu.SEPARATOR)
-        for i, sc in enumerate(shortcuts):
-            out.append(Item(sc.get("label", ""), Menu(
-                Item("Edit…", self.act(lambda sc=sc: self.edit_shortcut(sc), True)),
-                Item("Move up", self.act(lambda sc=sc: self.edit_config(lambda cfg: _move_up(cfg["shortcuts"], sc))),
-                     enabled=i > 0),
-                Item("Remove", self.act(lambda sc=sc: self.remove_shortcut(sc), True)))))
         return out
 
     # ---- actions ----
@@ -487,42 +460,6 @@ class Tray:
                     msg = ("Firmware updated", f"{name} is restarting with its new firmware.")
                     threading.Thread(target=dialog.notify, args=msg, daemon=True).start()
 
-    def edit_shortcut(self, target: dict | None) -> None:
-        """target is the shortcut shown on the menu when clicked, by value
-        (None to add a new one) -- not a position, since self.cfg can be
-        refreshed by the poll thread between menu build and click, which
-        would make a captured index refer to a different saved prompt."""
-        sc = target if target is not None else {"label": "", "prompt": ""}
-        title = "Edit saved prompt" if target is not None else "Add saved prompt"
-        label = dialog.input(title, "The name on the keypad (up to 28 characters).", "Name", sc["label"])
-        if label is None:
-            return
-        prompt = dialog.input(title, f'The instruction sent to Claude when you pick "{label}".', "Instruction", sc["prompt"])
-        if prompt is None:
-            return
-        if not label.strip() or not prompt.strip():
-            dialog.alert(title, "A saved prompt needs both a name and an instruction.")
-            return
-        new = {"label": label.strip()[:28], "prompt": prompt}
-
-        def fn(cfg: dict) -> None:
-            if target is None:
-                cfg["shortcuts"].append(new)
-            elif target in cfg["shortcuts"]:
-                cfg["shortcuts"][cfg["shortcuts"].index(target)] = new
-            else:
-                dialog.alert(title, "This saved prompt was changed elsewhere; nothing was edited.")
-
-        self.edit_config(fn)
-
-    def remove_shortcut(self, target: dict) -> None:
-        """target is matched by value against the live config, for the same
-        reason as edit_shortcut: a captured index can drift."""
-        if target not in self.cfg.get("shortcuts", []):
-            return
-        if dialog.confirm("Remove saved prompt?", f'Remove "{target["label"]}"?', "Remove", "Cancel"):
-            self.edit_config(lambda cfg: cfg["shortcuts"].remove(target) if target in cfg["shortcuts"] else None)
-
     def uninstall(self) -> None:
         """Removes the login items and Claude Code integration, then quits.
         Needed on macOS: dragging Keypad.app to the Trash (the normal way to
@@ -545,8 +482,3 @@ class Tray:
         self.quitting = True
         ipc.quit_agent(timeout=3)
         self.icon.stop()
-
-
-def _move_up(lst: list, item: dict) -> None:
-    if item in lst and (i := lst.index(item)) > 0:
-        lst[i - 1], lst[i] = lst[i], lst[i - 1]

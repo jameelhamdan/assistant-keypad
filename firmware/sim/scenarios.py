@@ -10,10 +10,13 @@ LOG = [{"k": "u", "t": "fix the failing tests in api/"},
 def status(mode="default", state="working", sessions=None, **kw):
     ss = sessions or [dict(SESSION, mode=mode, state=state)]
     return {"t": "status", "sessions": ss, "sel": ss[0]["id"], "queue": kw.get("queue", 0),
-            "paused": kw.get("paused", False), "menu": kw.get("menu", False), "log": kw.get("log", LOG)}
+            "paused": kw.get("paused", False), "log": kw.get("log", LOG),
+            **({"tune": kw["tune"]} if "tune" in kw else {})}
 
 
-HELLO = {"t": "hello", "v": 3, "host": "MacBook", "time": 1727712000}
+TUNE = {"model": ["default", "fable", "opus", "sonnet", "haiku"],
+        "effort": ["default", "low", "medium", "high", "xhigh"], "m": 2, "e": 3}
+HELLO = {"t": "hello", "v": 4, "host": "MacBook", "time": 1727712000}
 SETTINGS = {"t": "settings", "brightness": 80, "name": "Desk keypad"}
 
 SCREENS = {

@@ -2,20 +2,12 @@ import json
 import threading
 import time
 
-from conftest import SID, with_shortcuts
+from conftest import SID
 from fakekeypad import first_key
 
 from keypad import config
 from keypad.core import sessions as S
 from keypad.core.markdown import BOLD as B
-
-
-def test_status_menu_only_with_saved_prompts(env):
-    e = env(first_key)
-    e.hook("SessionStart", {})
-    wait_status(e, lambda st: st["menu"] is False and "keys" not in st)
-    with_shortcuts(e)
-    wait_status(e, lambda st: st["menu"] is True)
 
 
 def test_status_shows_the_asking_session(env):

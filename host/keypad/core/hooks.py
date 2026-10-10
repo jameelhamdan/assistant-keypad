@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .. import config, proto
+from .. import proto
 from ..config import MAX_CONTINUES
 from .ctx import Ctx
 from .dialogs import Dialog, DialogError, no_keypad
@@ -56,18 +56,6 @@ class Answer:
 
 OTHER = "Other… (type on the PC)"
 DIFF_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")  # their dialog body is a diff (colored on the keypad)
-
-
-def with_context(out: dict[str, Any], event: str, text: str) -> dict[str, Any]:
-    hso = out.setdefault("hookSpecificOutput", {"hookEventName": event})
-    if prev := hso.get("additionalContext"):
-        text = prev + "\n\n" + text
-    hso["additionalContext"] = text
-    return out
-
-
-def remote_instruction(label: str, prompt: str) -> str:
-    return f'[keypad] The user sent this instruction from the hardware keypad (shortcut "{label}"): {prompt}'
 
 
 def clip_all(items: list[str]) -> list[str]:
@@ -122,14 +110,11 @@ class Hooks:
             self.a.sync(sid)  # whatever the transcript holds now is history; what follows is live
         elif event == "SessionEnd":
             self.a.sessions.touch(sid, ENDED, "Session ended", clip(s(p, "reason"), 160), cwd)
-            self.a.shortcuts.take(sid)
             self.a.forget(sid)
         elif event == "UserPromptSubmit":
             self.a.sessions.reset_continues(sid)
             self.a.sessions.touch(sid, WORKING, "Working", clip(redact(s(p, "prompt")), 160), cwd)
-            return self.deliver_pending(sid, "UserPromptSubmit", out)
-        elif event == "PostToolUse":  # Claude is working: a prompt sent from the keypad goes in with this tool result
-            return self.deliver_pending(sid, "PostToolUse", out)
+            return out
         elif event == "PreToolUse":
             if tool == "AskUserQuestion":
                 return self.ask_user_question(ctx, sid, cwd, inp)
@@ -141,13 +126,6 @@ class Hooks:
         elif event == "Stop":
             return self.stop(ctx, sid, cwd, redact(s(p, "last_assistant_message")))
         return out
-
-    def deliver_pending(self, sid: str, event: str, out: dict[str, Any]) -> dict[str, Any]:
-        sc = self.a.shortcuts.take(sid)
-        if not sc:
-            return out
-        self.a.log.info("shortcut delivered via=%s label=%s", event, sc.label)
-        return with_context(out, event, remote_instruction(sc.label, sc.prompt))
 
     def usable(self) -> bool:
         """Whether the keypad should be asked at all."""
@@ -205,16 +183,13 @@ class Hooks:
     # ---- stop ----
 
     def stop(self, ctx: Ctx, sid: str, cwd: str, last: str) -> dict[str, Any]:
-        """Claude finished: continue or a saved prompt; Esc leaves it to the PC."""
+        """Claude finished: continue; Esc leaves it to the PC."""
         cfg = self.a.config()
         self.a.sync(sid)  # Claude's last message is in the feed before the keypad asks
         self.a.sessions.touch(sid, STOPPED, "Finished", clip(last, 160), cwd)
         project = self.a.sessions.project(sid)
-        # A saved prompt queued from the keypad goes straight in, whatever the "ask when finished" setting.
         # (After MAX_CONTINUES in a row Claude Code's own cap, which the installer sets to the same number,
         # ends the turn: nothing to ask here.)
-        if sc := self.a.shortcuts.take(sid):
-            return self.continue_shortcut(sid, sc)
         if cfg.behavior.ask_when_finished < 0:
             self.a.sessions.touch(sid, IDLE, "Done", last)
             self.a.notify(f"Claude finished: {project}")
@@ -229,28 +204,20 @@ class Hooks:
         ctx = ctx.with_timeout(cfg.behavior.timeout)
 
         try:
-            result = self.a.dialogs.run(ctx, project, "stop", lambda d: self.stop_screens(d, ctx, sid, project, cfg), sid=sid)
+            result = self.a.dialogs.run(ctx, project, "stop", lambda d: self.stop_screen(d, ctx, sid, project), sid=sid)
         except DialogError as e:
             self.a.log.info("stop left to the PC reason=%s", e)
             self.a.sessions.touch(sid, IDLE, "Idle", "Waiting for input on the PC")
             result = None
         return result or {}
 
-    def stop_screens(self, d: Dialog, ctx: Ctx, sid: str, project: str, cfg: config.Config) -> dict[str, Any] | None:
-        """What the keypad shows when Claude finished: continue, or a saved prompt."""
-        if sc := self.a.shortcuts.take(sid):  # queued while this request waited its turn
-            return self.continue_shortcut(sid, sc)
-        screen = self.a.shortcuts.screen("Claude finished", ["continue"], "done")
-        idx = self.a.picked(d.show(ctx, {**screen, "project": project}))
-        if idx == 0:
+    def stop_screen(self, d: Dialog, ctx: Ctx, sid: str, project: str) -> dict[str, Any] | None:
+        """What the keypad shows when Claude finished: continue."""
+        screen = {"tpl": "prompt", "title": "Claude finished", "items": ["continue"], "esc": "done", "project": project}
+        if self.a.picked(d.show(ctx, screen)) == 0:
             return self.continue_with(sid, CONTINUE_REASON, "Continue")
-        if idx is not None and 1 <= idx <= len(cfg.shortcuts):
-            return self.continue_shortcut(sid, cfg.shortcuts[idx - 1])
         self.a.sessions.touch(sid, IDLE, "Done", "Waiting for your next prompt")
         return None
-
-    def continue_shortcut(self, sid: str, sc: Any) -> dict[str, Any]:
-        return self.continue_with(sid, remote_instruction(sc.label, sc.prompt), "Shortcut: " + sc.label)
 
     def continue_with(self, sid: str, reason: str, label: str) -> dict[str, Any]:
         n = self.a.sessions.add_continue(sid)

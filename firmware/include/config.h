@@ -9,7 +9,7 @@
 #define KEYPAD_FW_VERSION "dev"   // release builds pass the tag (Makefile, CI)
 #endif
 
-constexpr int PROTOCOL_VERSION = 3;
+constexpr int PROTOCOL_VERSION = 4;
 constexpr uint16_t TCP_PORT = 7470;
 
 #if !defined(NATIVE_TEST) && (!defined(ARDUINO_USB_CDC_ON_BOOT) || ARDUINO_USB_CDC_ON_BOOT == 0)
@@ -27,18 +27,16 @@ constexpr uint8_t NUM_KEYS = 8;
 constexpr uint8_t KEY_ENC = 0;                   // encoder push switch
 
 // The fixed layout, modelled on Claude Code's keyboard use:
-//   [1] [2] [3] [4]          1-3  pick option 1-3 directly (Claude Code's number keys)
-//   [5] [6] [7] [8]          4/8  saved prompts 4 and 5 (status screen only; never decide anything)
+//   [1] [2] [3] [4]          status screen only (never decide anything):
+//   [5] [6] [7] [8]            1 pause/resume   2 next session   3 "ask when finished"   4 brightness   8 alert
 //                            knob turn: move the cursor / scroll
-//                            7    Enter
+//                            knob press, 7: Enter (select)
 //                            5    Esc: back, or leave the request to the PC (encoder click: same,
 //                                 so a stray knob press never decides anything)
 //                            6    sessions
-constexpr uint8_t KEY_UP = 4, KEY_DOWN = 8;          // what a knob turn is called inside the app: no key sends them
-constexpr uint8_t KEY_QUICK_4 = 4, KEY_QUICK_5 = 8;   // the physical keys 4 and 8: saved prompts 4 and 5 (status screen)
+constexpr uint8_t KEY_UP = 9, KEY_DOWN = 10;     // what a knob turn is called inside the app: above the physical keys 1-8
 constexpr uint8_t KEY_ESC = 5, KEY_SESSIONS = 6, KEY_ENTER = 7;
-constexpr uint8_t DIRECT_PICKS = 3;              // keys 1..3 pick options 1..3
-constexpr uint8_t MAX_QUICK = 5;                 // saved prompts on keys 1, 2, 3, 4 and 8
+constexpr uint8_t KEY_PAUSE = 1, KEY_NEXT = 2, KEY_ASK = 3, KEY_BRIGHT = 4, KEY_ALERT = 8;   // status screen
 
 constexpr int ENC_SW_PIN = 1;
 constexpr int ENC_DT_PIN = 2;
@@ -59,7 +57,6 @@ constexpr uint32_t KNOB_FAST_MS = 45;      // ...and closer than this, 4
 constexpr uint32_t HOST_TIMEOUT_MS = 6000;
 constexpr uint32_t HANDSHAKE_MS = 5000;
 constexpr uint32_t SENT_MS = 900;
-constexpr uint32_t QUICK_GUARD_MS = 1500;  // after a request goes away, keys 1-3 do not send a saved prompt
 constexpr uint32_t DIM_AFTER_MS = 60000;   // no key and no request for this long: dim the screen
 constexpr uint8_t DIM_PCT = 8;              // dimmed backlight (or the set brightness, if lower)
 

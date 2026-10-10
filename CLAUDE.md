@@ -31,8 +31,8 @@ Where things live (host/keypad/):
 - agent_cmd.py: agent process; core/agent.py ties sessions, dialogs, keypads, config together.
 - core/hooks.py: Claude Code hook decisions (empty dict = no decision). hook.py is the hook shim and must stay stdlib-only.
 - core/sessions.py: session registry + PHASES. core/transcript.py: follows session JSONL. core/markdown.py: Markdown for the screen. core/text.py: redaction, clipping, tool summaries.
-- core/stats.py: health counters for `keypad status`.
-- core/dialogs.py: dialog queue (one dialog owns keypads at a time, FIFO). core/shortcuts.py: saved prompts (list, queue for a session's next hook).
+- core/tune.py: the keypad's model and effort sliders (project .claude/settings.local.json). core/stats.py: health counters for `keypad status`.
+- core/dialogs.py: dialog queue (one dialog owns keypads at a time, FIFO).
 - device/hub.py: finds/connects/supervises keypads. device/pairing.py: USB setup (scan only during setup, provision). device/links.py: USB serial + Wi-Fi transports. device/discovery.py: mDNS.
 - proto.py: wire messages. secure.py: pairing handshake, HKDF, AES-GCM.
 - ipc.py + server.py: private channel/API between agent, hook, tray.

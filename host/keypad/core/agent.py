@@ -12,11 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 from .. import config, proto
 from ..proto import Why
+from . import tune
 from .ctx import Ctx
 from .dialogs import Dialogs
 from .hooks import Hooks
 from .sessions import BUSY_STATES, CONTINUING, IDLE, WORKING, Sessions, short, wire
-from .shortcuts import Shortcuts
 from .stats import Stats
 from .text import clip, tool_verb
 from .transcript import CLAUDE, INTERRUPT, RESULT, USER, Tail
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..device.hub import Conn, Hub
 
 
+BRIGHTNESS = (20, 50, 80, 100)  # what the status screen's key 4 steps through (%)
 POLL_EVERY = 0.3  # s between looks at the sessions' transcripts
 DISCOVER_WITHIN = 900  # s: transcripts touched this recently belong to sessions already running when the agent starts
 # states in which new transcript lines may change the shown state (not while a request waits on someone)
@@ -45,7 +46,6 @@ class Agent:
         self._dirty = threading.Event()
         self.stats = Stats()
         self.dialogs = Dialogs(self, log, self.stats)
-        self.shortcuts = Shortcuts(self)
         self._hooks = Hooks(self)
         self.dialogs.on_change = self.mark_dirty
         self.sessions.on_change = self.mark_dirty
@@ -223,16 +223,17 @@ class Agent:
             return
         live = self.sessions.live()
         shown = short(self.shown_id())
-        menu = bool(self.config().shortcuts) and bool(shown)
+        cur = next((x for x in live if short(x.id) == shown), None)
+        sliders = tune.view(cur.cwd) if cur else {}  # the model and effort its project's next session starts with
         for c in (c for c in self.hub.conns() if c.live):
             lst = wire(live)
             sel = shown
             if not any(s["id"] == sel for s in lst):
                 sel = lst[0]["id"] if lst else ""
             st: dict[str, Any] = {"t": "status", "sessions": lst, "sel": sel,
-                                  "queue": self.dialogs.queued(), "paused": self.paused(), "menu": menu,
-                                  "quick": self.shortcuts.quick() if menu else [],
-                                  "queued": self.shortcuts.queued(self.shown_id())}
+                                  "queue": self.dialogs.queued(), "paused": self.paused()}
+            if sliders:
+                st["tune"] = sliders
             c.send(st)
             c.push_feed(sel, next((x.log for x in live if short(x.id) == sel), []))
 
@@ -253,21 +254,67 @@ class Agent:
     def message(self, c: Conn, m: dict[str, Any]) -> None:
         t = m["t"]
         if t == "press":
-            if m.get("id") == "status":
-                sid = self.shown_id()
-                if m.get("act") == "menu":
-                    threading.Thread(target=self.shortcuts.menu, daemon=True).start()
-                elif m.get("act") == "unqueue" and sid:
-                    self.shortcuts.cancel(sid)
-                elif m.get("act") == "quick" and isinstance(m.get("idx"), int) and sid:
-                    threading.Thread(target=self.shortcuts.queue, args=(m["idx"], sid), daemon=True).start()
-                return
             if not self.dialogs.press(c.id, m):
                 # stale screen on that keypad: send it back to the status screen
                 c.send({"t": "close", "id": m.get("id", ""), "why": Why.STALE})
         elif t == "session":
             self.sessions.select(m.get("sid", ""))
             self.mark_dirty()
+        elif t == "tune":
+            self.set_tune(m)
+        elif t == "act":
+            self.quick_action(c, str(m.get("a", "")))
+
+    def quick_action(self, c: Conn, name: str) -> None:
+        """The status screen's keys 1, 3, 4 and 8: pause, "ask when finished", brightness, the alert."""
+        cfg = self.config()
+        b = cfg.behavior
+        if name == "pause":
+            self.set_paused(not self.paused())
+            self.toast("Keypad paused: answer on the PC" if self.paused() else "Keypad resumed", "warn" if self.paused() else "ok", 2500)
+            return
+        if name == "ask":
+            b.ask_when_finished = {"never": 0, "always": 60, "away": -1}[
+                "never" if b.ask_when_finished < 0 else "always" if b.ask_when_finished == 0 else "away"]
+            text = {-1: "never", 0: "always", 60: "only when away"}[b.ask_when_finished]
+            note = f"Finished: ask {text}" if b.ask_when_finished >= 0 else "Finished: never ask"
+        elif name == "alert":
+            b.notify_when_finished = not b.notify_when_finished
+            note = "Finished alert " + ("on" if b.notify_when_finished else "off")
+        elif name == "bright":
+            d = self.store.device(c.id)
+            if d is None:
+                return
+            level = next((v for v in BRIGHTNESS if v > d.brightness), BRIGHTNESS[0])
+            self.store.update(c.id, lambda x: setattr(x, "brightness", level))
+            if self.hub:
+                self.hub.send_settings(c.id)
+            self.toast(f"Brightness {level}%", "info", 1500)
+            return
+        else:
+            return
+        self.set_config(cfg)
+        try:
+            config.save(cfg)
+        except OSError as e:
+            self.log.warning("settings not saved: %s", e)
+        self.toast(note, "info", 2000)
+
+    def set_tune(self, m: dict[str, Any]) -> None:
+        """The keypad's sliders: model and effort for the next session in the shown session's project."""
+        x = next((x for x in self.sessions.live() if short(x.id) == str(m.get("sel", ""))), None)
+        if x is None or not x.cwd:
+            return
+        try:
+            model, effort = tune.choose(x.cwd, int(m.get("m", -1)), int(m.get("e", -1)))
+            tune.save(x.cwd, model, effort)
+        except (ValueError, TypeError, OSError) as e:
+            self.log.warning("model/effort not saved project=%s reason=%s", x.project, e)
+            self.toast("Model and effort not saved", "warn", 3000)
+            return
+        self.log.info("model/effort set project=%s model=%s effort=%s", x.project, model, effort)
+        self.toast(f"{x.project}: {model}, effort {effort}", "ok", 3000)
+        self.mark_dirty()
 
     # ---- screen builders ----
 
@@ -300,5 +347,5 @@ class Agent:
             "devices": [d.view() for d in self.store.devices()], "problems": dict(self.hub.problems) if self.hub else {},
             "sessions": sessions,
             "presence": self.presence_view(), "current": self.shown_id(),
-            "shortcuts": self.shortcuts.labels(), "stats": self.stats.view(),
+            "stats": self.stats.view(),
         }

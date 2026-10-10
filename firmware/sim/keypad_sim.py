@@ -92,6 +92,12 @@ class Sim:
     def key(self, k: int, hold_ms: int = 120):
         self._cmd(f"key {k} {hold_ms}")
 
+    def pick(self, n: int):
+        """Chooses option n (1-based) of a fresh screen: the knob down to it, then a knob press."""
+        if n > 1:
+            self.turn(n - 1)
+        self.key(7)
+
     def hold(self, k: int, ms: int):
         self._cmd(f"key {k} {ms}")
 

@@ -32,16 +32,23 @@ struct LogEntry {
 constexpr char MARK_BOLD = '\x01', MARK_CODE = '\x02', MARK_DIM = '\x03';
 inline bool isMark(char c) { return c >= MARK_BOLD && c <= MARK_DIM; }
 
+constexpr uint8_t MAX_TUNE = 6;   // choices on one slider
+
+// The model and effort sliders for the shown session's project (its next session uses them).
+struct TuneModel {
+    uint8_t nModel, nEffort;   // 0 = the host offers nothing (no project known)
+    char model[MAX_TUNE][12];
+    char effort[MAX_TUNE][12];
+    int8_t m, e;               // the values the host has now
+};
+
 struct StatusModel {
     uint8_t n;
     SessionInfo s[MAX_SESSIONS];
     char sel[9];
     uint8_t queue;
     bool paused;
-    bool menu;            // Enter on the status screen opens "Send to Claude"
-    char queued[24];      // label of a saved prompt waiting for the shown session's next hook ("" = none)
-    uint8_t nQuick;       // keys 1-3 on the status screen send these saved prompts at once
-    char quick[MAX_QUICK][16];
+    TuneModel tune;
     uint8_t nLog;
     LogEntry log[MAX_LOG]; // transcript of the selected session, oldest first
     char *logText;         // LOG_POOL bytes (PSRAM)
@@ -50,7 +57,7 @@ struct StatusModel {
 
 // select: a Claude Code dialog (permission, question): title, body, question, numbered options
 // multi:  the same with checkboxes and a final Submit row
-// prompt: the transcript with numbered choices below it (Claude finished, Send to Claude)
+// prompt: the transcript with numbered choices below it (Claude finished)
 enum class Tpl : uint8_t { Select, Multi, Prompt };
 
 struct ScreenModel {
@@ -75,7 +82,7 @@ struct ScreenModel {
     int16_t maxScroll;    // set by the renderer
 };
 
-enum class Mode : uint8_t { Boot, Waiting, Status, Sessions, Screen, Ota };
+enum class Mode : uint8_t { Boot, Waiting, Status, Sessions, Tune, Screen, Ota };
 
 struct Model {
     Mode mode;
@@ -88,7 +95,6 @@ struct Model {
     bool paired;
 
     bool wifiHost;            // the host on Wi-Fi has said hello and is alive
-    uint32_t screenEndedAt;   // millis() when a request screen last went away (a stray press right after must not act on the status screen)
     uint32_t lastHostAt;      // millis() of the last message from a host (0 = none since power-up)
     WifiState wifi;
     char ssid[33];
@@ -103,6 +109,10 @@ struct Model {
     int16_t logMax;           // set by the renderer
     int8_t pick;              // session picker cursor: 0 = follow latest, 1..n = status.s[pick - 1]
     ScreenModel screen;
+    int8_t tuneRow;           // 0 = model slider, 1 = effort slider
+    bool tuneEdit;            // the knob changes the slider's value (after a knob press)
+    int8_t tuneM, tuneE;      // slider positions shown
+    uint32_t tuneSentAt;      // millis() of the last save: the host's status may still show the old values
 
     char sent[64];            // "Allow" or the picked item, shown briefly after a press
     uint32_t sentUntil;

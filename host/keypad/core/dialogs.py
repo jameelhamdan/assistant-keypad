@@ -31,8 +31,7 @@ def no_keypad() -> DialogError:
 
 def press_matches(screen: dict[str, Any], press: dict[str, Any]) -> bool:
     """Whether a press is one the screen offered: Esc with the screen's esc
-    action, Enter on an option, a number key on its own option, or Submit with
-    valid picks. Anything else is not a decision, whatever it claims."""
+    action, Enter on an option, or Submit with valid picks. Anything else is not a decision, whatever it claims."""
     key, act = press.get("key"), press.get("act")
     if not isinstance(key, int) or not isinstance(act, str):
         return False
@@ -46,7 +45,7 @@ def press_matches(screen: dict[str, Any], press: dict[str, Any]) -> bool:
     idx = press.get("idx")
     if act != "pick" or not isinstance(idx, int) or not 0 <= idx < len(items):
         return False
-    return key == proto.KEY_ENTER or (1 <= key <= proto.DIRECT_PICKS and idx == key - 1)
+    return key == proto.KEY_ENTER
 
 
 class Display(Protocol):

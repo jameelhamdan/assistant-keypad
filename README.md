@@ -8,18 +8,21 @@ A hardware keypad for [Claude Code](https://claude.com/claude-code). A small col
 
 | Key | Does |
 |---|---|
-| 1 2 3 | pick option 1, 2 or 3 |
-| 4 / 8 | saved prompts 4 and 5 (status screen) |
-| 7 | Enter: select the highlighted option |
-| 5 | back; *done* on the "Claude finished" screen; on the status screen it takes back a saved prompt you queued. Does nothing on a decision |
+| knob turn / press | move the cursor / select it (the only way to choose an option) |
+| 1 | status screen: pause / resume the keypad |
+| 2 | status screen: show the next session |
+| 3 | status screen: "ask when finished" always / only when away / never |
+| 4 | status screen: screen brightness (20 / 50 / 80 / 100 %) |
+| 8 | status screen: "Claude finished" alert on / off |
+| 7 | Enter (same as the knob press); on the status screen, open the model and effort sliders |
+| 5 | back; *done* on the "Claude finished" screen; on the status screen it jumps to the newest line. Does nothing on a decision |
 | 6 | session list |
 | knob | turn = move / scroll, press = 7 |
 
 ## What it does
 
 - **Live feed:** the transcript of the selected session: your prompts, Claude's text (Markdown laid out for the screen), tool calls, errors, elapsed time, permission mode.
-- **Decisions:** permission prompts (*Yes / Yes, don't ask again / No*, edits shown as a diff), `AskUserQuestion` (single and multi-select), and when Claude finishes: *continue* or a saved prompt.
-- **Saved prompts:** instructions you define in the tray, sent from the keypad to the shown session.
+- **Decisions:** permission prompts (*Yes / Yes, don't ask again / No*, edits shown as a diff), `AskUserQuestion` (single and multi-select), and when Claude finishes: *continue*.
 - **Fallback:** if the keypad is paused, unreachable or not answered within 5 minutes, Claude Code asks in the terminal as usual. If you answer in the terminal first, the keypad dialog closes. Nothing is ever auto-approved.
 
 ## Install
@@ -40,7 +43,7 @@ Build the keypad: [docs/HARDWARE.md](docs/HARDWARE.md). Everything it does, and 
 
 ## Settings
 
-Tray → *Options*, *Saved prompts*, or edit `config.json` (reloaded on save). Set `KEYPAD_LOG=debug` for a more detailed log.
+Tray → *Options*, or edit `config.json` (reloaded on save). Set `KEYPAD_LOG=debug` for a more detailed log.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -51,10 +54,6 @@ Tray → *Options*, *Saved prompts*, or edit `config.json` (reloaded on save). S
 | `behavior.auto_update` | true | installed builds update themselves from the project's GitHub releases (see below) |
 
 **Updates.** An installed Keypad checks the latest GitHub release a minute and a half after it starts and then every 6 hours. With `auto_update` on, it downloads the installer for your OS, checks its SHA-256 against the digest GitHub publishes for the file, and installs it once no request is waiting on the keypad: on Windows the setup runs silently, on macOS the app is replaced from the disk image and reopened. With it off, the tray shows *Update to x.y.z…*. Tray → Advanced → *Check for updates…* checks on demand. A development checkout never updates itself. Only HTTPS requests to GitHub are made.
-
-A first run starts with six saved prompts (Tests, Commit, Review, Explain, Summary, Clear); change them in the tray. If you already had a config, tray -> Saved prompts -> *Add the suggested prompts* adds them.
-
-Saved prompts: the first five are on keys 1, 2, 3, 4 and 8 of the keypad's status screen; Enter opens the full list. A press sends the prompt to the shown session: while Claude works it arrives with the next tool result, and an idle session gets it with your next prompt.
 
 A keypad can be paired with up to three computers (one Wi-Fi network); one holds it at a time. A second computer is told who has it; tray -> your keypad -> *Use keypad here* takes it over. `keypad status` also shows health counters: reconnects, ignored presses, hook times.
 

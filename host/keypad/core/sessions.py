@@ -121,10 +121,6 @@ class Sessions:
         x = self.get(sid)
         return x.project if x else ""
 
-    def is_busy(self, sid: str) -> bool:
-        x = self.get(sid)
-        return bool(x and x.state in BUSY_STATES)
-
     def continues(self, sid: str) -> int:
         x = self.get(sid)
         return x.continues if x else 0

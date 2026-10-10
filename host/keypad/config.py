@@ -16,7 +16,6 @@ from typing import Any
 
 from .dirs import data_dir
 
-MAX_SHORTCUTS = 16  # what the tray lists and the keypad pages through
 MAX_CONTINUES = 20  # consecutive keypad continues: Claude Code's own cap on them, which the installer sets to this
 
 
@@ -36,24 +35,6 @@ def state_path() -> Path:
 
 
 @dataclass
-class Shortcut:
-    label: str = ""
-    prompt: str = ""
-
-
-def default_shortcuts() -> list[Shortcut]:
-    """The saved prompts a first run starts with (the first five are on the keypad's quick keys)."""
-    return [Shortcut(label, prompt) for label, prompt in (
-        ("Tests", "Run the project's tests and fix any failures."),
-        ("Commit", "Commit the current changes with a clear, concise message."),
-        ("Review", "Review your own changes for bugs and leftovers before we finish."),
-        ("Explain", "Explain briefly what you just did and why."),
-        ("Summary", "Summarize where we are and what is left to do, in a few lines."),
-        ("Clear", "Wrap up: write a short handoff note of the current state and next steps, so I can /clear the context."),
-    )]
-
-
-@dataclass
 class Behavior:
     ask_when_finished: int = 60  # s away from the PC before Claude finishing is asked on the keypad (0 = always, -1 = never)
     notify_when_finished: bool = True  # light up the keypad when Claude finishes and nothing is asked on it
@@ -65,7 +46,6 @@ class Behavior:
 @dataclass
 class Config:
     behavior: Behavior = field(default_factory=Behavior)
-    shortcuts: list[Shortcut] = field(default_factory=list)  # saved prompts, sent from the keypad (none by default)
 
     def validate(self) -> None:
         """Clamps values into safe ranges."""
@@ -80,7 +60,6 @@ class Config:
 
         b.timeout = clamp(b.timeout, 10, 3600)
         b.ask_when_finished = clamp(b.ask_when_finished, -1, 3600)
-        self.shortcuts = [s for s in self.shortcuts if s.label.strip() and s.prompt.strip()][:MAX_SHORTCUTS]
 
     # ---- (de)serialisation: the same names in YAML and over IPC ----
     def to_dict(self) -> dict[str, Any]:
@@ -113,8 +92,6 @@ def _from_plain(cls: type, d: Any) -> Any:
         cur, v = getattr(obj, f.name), d[f.name]
         if is_dataclass(cur):
             setattr(obj, f.name, _from_plain(type(cur), v))
-        elif f.name == "shortcuts" and isinstance(v, list):
-            setattr(obj, f.name, [_from_plain(Shortcut, x) for x in v if isinstance(x, dict)])
         elif isinstance(cur, bool):
             # "no", "off", "false" and "0" in a hand-edited file mean off
             setattr(obj, f.name, v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on"))
@@ -130,7 +107,7 @@ def load() -> tuple[Config, Exception | None]:
     an unreadable file gives the defaults."""
     p = config_path()
     if not p.exists():
-        c = Config(shortcuts=default_shortcuts())
+        c = Config()
         try:
             save(c)
         except OSError as e:

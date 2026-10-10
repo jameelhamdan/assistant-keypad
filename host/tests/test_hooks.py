@@ -1,6 +1,6 @@
 import time
 
-from conftest import SID, behavior, with_shortcuts
+from conftest import SID, behavior
 from fakekeypad import first_key, press_label
 
 from keypad import config
@@ -28,7 +28,7 @@ def test_ask_user_question_needs_no_permission_screen(env):
 
 
 def test_permission_dont_ask_again(env):
-    e = env(lambda s: {"key": 2, "act": "pick", "idx": 1})  # number key 2
+    e = env(lambda s: {"key": 7, "act": "pick", "idx": 1})
     out = e.hook("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "go test ./..."}, "permission_suggestions": SUGGEST})
     assert e.fake.last_screen()["items"] == ["Yes", "Yes, and don't ask again for go test:*", "No"]
     d = out["hookSpecificOutput"]["decision"]
@@ -85,16 +85,6 @@ def test_typing_at_the_pc_does_not_take_a_request_off_the_keypad(env):
     assert time.time() - start >= 2.9, "the keypad's request was handed back although nobody answered"
 
 
-def test_a_first_run_starts_with_useful_saved_prompts(home):
-    assert config.Config().shortcuts == [], "the dataclass itself has none: tests and hand-written files stay as written"
-    c, err = config.load()
-    assert err is None and [s.label for s in c.shortcuts][:3] == ["Tests", "Commit", "Review"]
-    assert all(len(s.label) <= 12 and s.prompt for s in c.shortcuts), "labels fit a quick key"
-    c.shortcuts = []
-    config.save(c)  # the user removed them all: that stays
-    assert config.load()[0].shortcuts == []
-
-
 def test_stop_continue(env):
     e = env(press_label("continue"))
     out = e.hook("Stop", {"last_assistant_message": "All done."})
@@ -105,16 +95,8 @@ def test_stop_continue(env):
 
 
 def test_stop_done_ends_it_there(env):
-    e = env(lambda s: {"key": 5, "act": "done"})  # 5 = done: no continue, no saved prompt
+    e = env(lambda s: {"key": 5, "act": "done"})  # 5 = done: no continue
     assert e.hook("Stop", {}) == {}
-
-
-def test_stop_with_shortcut(env):
-    e = env(lambda s: {"key": 7, "act": "pick", "idx": 3})  # cursor moved to the 3rd saved prompt, Enter
-    cfg = with_shortcuts(e)
-    out = e.hook("Stop", {})
-    assert e.fake.last_screen()["items"] == ["continue", "Prompt 0", "Prompt 1", "Prompt 2"]
-    assert out["decision"] == "block" and cfg.shortcuts[2].prompt in out["reason"]
 
 
 def test_continuing_has_no_confirmation_screen_of_its_own(env, monkeypatch):
@@ -131,7 +113,7 @@ def test_ask_user_question(env):
     def policy(s):
         if s["tpl"] == "multi":
             return {"key": 7, "act": "submit", "sel": [0, 2]}
-        return {"key": 2, "act": "pick", "idx": 1}
+        return {"key": 7, "act": "pick", "idx": 1}
 
     e = env(policy)
     inp = {"questions": [
@@ -145,17 +127,8 @@ def test_ask_user_question(env):
     assert h["updatedInput"]["questions"] == inp["questions"]
 
 
-def test_shortcut_for_idle_session_waits_for_next_prompt(env):
-    e = env(first_key)
-    cfg = with_shortcuts(e)
-    e.hook("SessionStart", {})  # idle
-    e.a.shortcuts.queue(0, SID)
-    out = e.hook("UserPromptSubmit", {"prompt": "hi"})
-    assert cfg.shortcuts[0].prompt in out["hookSpecificOutput"]["additionalContext"]
-
-
 def test_forged_press_is_not_a_decision(env):
-    e = env(lambda s: {"key": 3, "act": "pick", "idx": 0})  # claims option 1 (Yes) from key 3
+    e = env(lambda s: {"key": 3, "act": "pick", "idx": 0})  # claims option 1 (Yes) from the unassigned key 3
     cfg = config.Config()
     cfg.behavior.timeout = 1
     e.a.set_config(cfg)
@@ -173,7 +146,7 @@ def test_permission_shows_the_whole_command(env):
 
 
 def test_question_descriptions_and_long_text(env):
-    e = env(lambda s: {"key": 1, "act": "pick", "idx": 0})
+    e = env(lambda s: {"key": 7, "act": "pick", "idx": 0})
     long_q = "Which of these deployment strategies should I use for the staging environment, given the latency and cost constraints we discussed above?"
     inp = {"questions": [
         {"question": "Which DB?", "options": [{"label": "Postgres", "description": "Relational, battle-tested"},{"label": "SQLite"}]},
@@ -211,7 +184,7 @@ def test_edit_approval_shows_the_diff(env):
 
 
 def test_dont_ask_again_can_last_for_the_session_only(env):
-    e = env(lambda s: {"key": 2, "act": "pick", "idx": 1})
+    e = env(lambda s: {"key": 7, "act": "pick", "idx": 1})
     cfg = config.Config()
     cfg.behavior.always_for_session = True
     e.a.set_config(cfg)
@@ -288,37 +261,3 @@ def test_a_multi_select_question_has_no_other_row(env):
     out = e.hook("PreToolUse", {"tool_name": "AskUserQuestion", "tool_input": inp})
     assert e.fake.last_screen()["items"] == ["lint", "test"]
     assert out["hookSpecificOutput"]["updatedInput"]["answers"] == {"Checks?": "test"}
-
-
-def test_quick_keys_send_the_first_saved_prompts(env):
-    e = env(first_key)
-    cfg = with_shortcuts(e)
-    e.hook("SessionStart", {})
-    e.a.push_status()
-    deadline = time.time() + 2
-    while not e.fake.status and time.time() < deadline:
-        time.sleep(0.01)
-    assert e.fake.status[-1]["quick"] == [s.label[:8] for s in cfg.shortcuts[:3]]
-    c = e.hub.get("kp-000001")
-    e.a.message(c, {"t": "press", "id": "status", "key": 1, "act": "quick", "idx": 0})
-    deadline = time.time() + 2
-    while time.time() < deadline and not (sc := e.a.shortcuts.take(SID)):
-        time.sleep(0.01)
-    assert sc.label == cfg.shortcuts[0].label
-
-
-def test_a_queued_prompt_is_shown_on_the_keypad_and_can_be_cancelled_from_it(env):
-    e = env(first_key)
-    with_shortcuts(e)
-    e.hook("SessionStart", {})
-    e.a.shortcuts.queue(1, SID)
-    deadline = time.time() + 2
-    while time.time() < deadline and e.fake.status[-1].get("queued") != "Prompt 1":
-        time.sleep(0.01)
-    assert e.fake.status[-1]["queued"] == "Prompt 1"
-    e.a.message(e.hub.get("kp-000001"), {"t": "press", "id": "status", "key": 5, "act": "unqueue"})
-    deadline = time.time() + 2
-    while time.time() < deadline and e.fake.status[-1].get("queued"):
-        time.sleep(0.01)
-    assert e.fake.status[-1]["queued"] == "" and e.a.shortcuts.take(SID) is None
-    assert any("Cancelled" in t["text"] for t in e.fake.toasts)

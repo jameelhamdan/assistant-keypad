@@ -35,7 +35,7 @@ Links are Amazon searches, not product pages: listings change. Match the specs, 
               [5]    [6]    [7]    [8]
 ```
 
-Keys 1-3 pick an option, the knob moves and scrolls, 4 and 8 send saved prompts 4 and 5 from the status screen, 7 is Enter, 5 is back, 6 lists sessions. The layout is fixed in firmware (`KEY_MAP` in `config.h`).
+The knob moves and scrolls and its press (or 7) selects; on the status screen 1 pauses, 2 shows the next session, 3 and 8 toggle settings, 4 sets the brightness; 5 is back, 6 lists sessions. The layout is fixed in firmware (`KEY_MAP` in `config.h`).
 
 ## Wiring
 

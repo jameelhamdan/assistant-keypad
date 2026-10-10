@@ -10,7 +10,7 @@ import json
 from enum import StrEnum
 from typing import Any
 
-VERSION = 3
+VERSION = 4
 TCP_PORT = 7470
 MDNS_SERVICE = "_ckeypad._tcp.local."
 USB_VENDOR_ID = 0x303A  # Espressif native USB
@@ -19,13 +19,10 @@ MAX_HOST_MSG = 16000  # the keypad takes 16 KB (whole Claude messages)
 MAX_DEVICE_MSG = 1024
 MAX_ITEMS = 32  # options on one screen; the cursor scrolls through them
 
-# The keypad's fixed layout (firmware/include/config.h):  1 2 3 [4 prompt 4]
-#                                                         [5 esc] [6 sessions] [7 enter] [8 prompt 5]; the knob moves/scrolls
+# The keypad's fixed layout (firmware/include/config.h):  [1 pause] [2 next] [3 ask] [4 dim]   (status screen)
+#                                                         [5 esc] [6 sessions] [7 enter] [8 alert]; the knob moves/scrolls
 KEY_ESC, KEY_ENTER = 5, 7  # the knob press is sent as Enter (7): the keypad never sends key 0
 ESC_KEYS = (KEY_ESC,)
-DIRECT_PICKS = 3  # keys 1-3 pick options 1-3
-MAX_QUICK = 5  # saved prompts on the status screen: keys 1, 2, 3, 4 and 8
-
 
 
 class Why(StrEnum):
@@ -49,7 +46,7 @@ class Refusal(StrEnum):
     BAD_NONCE = "bad_nonce"
 
 
-DEVICE_TYPES = {"hello", "pong", "press", "session", "provisioned", "ota"}
+DEVICE_TYPES = {"hello", "pong", "press", "session", "tune", "act", "provisioned", "ota"}
 
 
 # Text buffers on the keypad (firmware/src/model.h), in bytes without the NUL.

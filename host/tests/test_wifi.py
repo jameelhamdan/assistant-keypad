@@ -66,7 +66,7 @@ def test_the_hub_dials_a_paired_keypad_and_syncs_state_over_encrypted_wifi(rig):
 
 def test_a_permission_prompt_is_answered_over_the_real_link(rig):
     fw = FakeFirmware("kp-000001", {"h-aaaa": KEY})
-    fw.policy = lambda s: {"key": 1, "act": "pick", "idx": 0}
+    fw.policy = lambda s: {"key": 7, "act": "pick", "idx": 0}
     r = rig(fw)
     assert fw.wait(lambda: connected(r))
     out = r.agent.hook(Ctx(), "PermissionRequest", {"session_id": "s1", "cwd": "/w/app", "tool_name": "Bash",
@@ -98,7 +98,7 @@ def test_a_screen_open_during_a_drop_is_shown_again_after_reconnecting(rig):
     fw.drop()
     assert fw.wait(lambda: len(fw.screens) >= 2, 30), "the open screen was not re-sent on reconnect"
     assert fw.screens[1]["id"] == fw.screens[0]["id"]
-    fw.send({"t": "press", "id": fw.screens[0]["id"], "key": 1, "act": "pick", "idx": 0})
+    fw.send({"t": "press", "id": fw.screens[0]["id"], "key": 7, "act": "pick", "idx": 0})
     assert fw.wait(lambda: "out" in result)
     assert result["out"]["hookSpecificOutput"]["decision"]["behavior"] == "allow"
     fw.close()

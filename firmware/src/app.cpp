@@ -136,6 +136,8 @@ void applySettings(JsonDocument &doc) {
     if (changed) storeSave(stored);
 }
 
+int clampInt(int v, int lo, int hi);
+
 void applyStatus(JsonDocument &doc) {
     StatusModel &st = model.status;
     char prevSel[sizeof(st.sel)];
@@ -157,13 +159,32 @@ void applyStatus(JsonDocument &doc) {
     strlcpy(st.sel, doc["sel"] | "", sizeof(st.sel));
     st.queue = doc["queue"] | 0;
     st.paused = doc["paused"] | false;
-    st.menu = doc["menu"] | false;
-    copyText(st.queued, sizeof(st.queued), doc["queued"] | "");
-    st.nQuick = 0;
-    for (const char *q : doc["quick"].as<JsonArrayConst>()) {
-        if (st.nQuick >= MAX_QUICK) break;
-        copyText(st.quick[st.nQuick++], sizeof(st.quick[0]), q);
+    TuneModel &tn = st.tune;
+    tn.nModel = tn.nEffort = 0;
+    tn.m = tn.e = 0;
+    JsonObjectConst tu = doc["tune"].as<JsonObjectConst>();
+    if (!tu.isNull()) {
+        for (const char *q : tu["model"].as<JsonArrayConst>()) {
+            if (tn.nModel >= MAX_TUNE) break;
+            copyText(tn.model[tn.nModel++], sizeof(tn.model[0]), q);
+        }
+        for (const char *q : tu["effort"].as<JsonArrayConst>()) {
+            if (tn.nEffort >= MAX_TUNE) break;
+            copyText(tn.effort[tn.nEffort++], sizeof(tn.effort[0]), q);
+        }
+        if (!tn.nModel || !tn.nEffort) {
+            tn.nModel = tn.nEffort = 0;
+        } else {
+            tn.m = (int8_t)clampInt(tu["m"] | 0, 0, tn.nModel - 1);
+            tn.e = (int8_t)clampInt(tu["e"] | 0, 0, tn.nEffort - 1);
+        }
     }
+    bool editing = model.mode == Mode::Tune && model.tuneEdit;
+    if (!editing && (uint32_t)(millis() - model.tuneSentAt) > 1500) {
+        model.tuneM = tn.m;
+        model.tuneE = tn.e;
+    }
+    if (model.mode == Mode::Tune && !tn.nModel) model.mode = Mode::Status;
     model.view = 0;
     for (uint8_t i = 0; i < st.n; i++) if (!strcmp(st.s[i].id, st.sel)) model.view = i;
     if (strcmp(prevSel, st.sel) != 0) {   // another session: its transcript arrives as a new feed
@@ -366,10 +387,7 @@ void onMessage(char *json, size_t len, Src src) {
     } else if (!strcmp(t, "close")) {
         const char *id = doc["id"] | "";
         if (model.screen.active && !strcmp(id, model.screen.id)) model.screen.active = false;
-        if (!model.screen.active && model.mode == Mode::Screen) {
-            model.mode = Mode::Status;
-            model.screenEndedAt = millis();
-        }
+        if (!model.screen.active && model.mode == Mode::Screen) model.mode = Mode::Status;
     } else if (!strcmp(t, "toast")) {
         const char *lv = doc["level"] | "info";
         appToast(doc["text"] | "", !strcmp(lv, "info") ? Tone::Info : toneOf(lv), doc["ms"] | 2500);
@@ -419,7 +437,6 @@ void answer(uint8_t key, const char *act, int idx, const char *label) {
     strlcpy(lastAnswered, sc.id, sizeof(lastAnswered));
     sendHost(d);
     sc.active = false;   // locked: further presses do nothing until the host moves on
-    model.screenEndedAt = millis();
     strlcpy(model.sent, label, sizeof(model.sent));
     model.sentUntil = millis() + SENT_MS;
     model.mode = Mode::Status;
@@ -435,7 +452,7 @@ void sendSession(const char *sid) {
 
 int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-// ---- dialogs: cursor, Enter, number keys, Esc ----
+// ---- dialogs: cursor, Enter, Esc ----
 
 int lastRow(const ScreenModel &sc) { return sc.tpl == Tpl::Multi ? sc.nItems : sc.nItems - 1; }   // multi: + Submit
 
@@ -493,12 +510,6 @@ void screenKey(uint8_t key) {
         if (sc.esc[0]) answer(key, sc.esc, -1, !strcmp(sc.esc, "done") ? "Done" : "Back");
     } else if (key == KEY_UP || key == KEY_DOWN) {
         screenMove(key == KEY_UP ? -1 : 1);
-    } else if (key >= 1 && key <= DIRECT_PICKS) {   // number keys pick at once, like Claude Code
-        int idx = key - 1;
-        if (idx >= sc.nItems) return;
-        sc.cursor = (int8_t)idx;
-        if (sc.tpl == Tpl::Multi) togglePick(sc, idx);
-        else answer(key, "pick", idx, sc.items[idx]);
     }
 }
 
@@ -522,55 +533,88 @@ void chooseSession(int row) {   // 0..n-1: that session; it stays shown until a 
     model.mode = Mode::Status;
 }
 
-void sendMenu(uint8_t key, const char *act, int idx = -1) {
-    JsonDocument d;
-    d["t"] = "press";
-    d["id"] = "status";
-    d["key"] = key;
-    d["act"] = act;
-    if (idx >= 0) d["idx"] = idx;
-    sendHost(d);
+void openTune() {
+    const TuneModel &tn = model.status.tune;
+    model.tuneRow = 0;
+    model.tuneEdit = false;
+    model.tuneM = tn.m;
+    model.tuneE = tn.e;
+    model.mode = Mode::Tune;
 }
 
-void quickKey(uint8_t key);
+void sendTune() {
+    JsonDocument d;
+    d["t"] = "tune";
+    d["sel"] = model.status.sel;
+    d["m"] = model.tuneM;
+    d["e"] = model.tuneE;
+    sendHost(d);
+    model.tuneSentAt = millis();
+}
+
+// The knob moves between the sliders; after a press (7) it changes the value of the one it is on; another
+// press saves it for the project's next session, Esc keeps the old value.
+void tuneKey(uint8_t key) {
+    const TuneModel &tn = model.status.tune;
+    if (key == KEY_UP || key == KEY_DOWN) {
+        int d = key == KEY_UP ? -1 : 1;
+        if (!model.tuneEdit) model.tuneRow = (int8_t)clampInt(model.tuneRow + d, 0, 1);
+        else if (model.tuneRow == 0) model.tuneM = (int8_t)clampInt(model.tuneM + d, 0, tn.nModel - 1);
+        else model.tuneE = (int8_t)clampInt(model.tuneE + d, 0, tn.nEffort - 1);
+    } else if (key == KEY_ENTER) {
+        if (model.tuneEdit) sendTune();
+        model.tuneEdit = !model.tuneEdit;
+    } else if (key == KEY_ESC) {
+        if (model.tuneEdit) {
+            model.tuneM = tn.m;
+            model.tuneE = tn.e;
+            model.tuneEdit = false;
+        } else {
+            model.mode = Mode::Status;
+        }
+    }
+}
+
+// A quick action for the host to carry out (pause, the "ask when finished" setting, brightness, alert).
+void sendAct(const char *name) {
+    JsonDocument d;
+    d["t"] = "act";
+    d["a"] = name;
+    sendHost(d);
+}
 
 void statusKey(uint8_t key) {
     if (key == KEY_SESSIONS) {
         openSessions();
+    } else if (key == KEY_PAUSE) {
+        sendAct("pause");
+    } else if (key == KEY_NEXT) {
+        if (model.status.n > 1) chooseSession((model.view + 1) % model.status.n);
+    } else if (key == KEY_ASK) {
+        sendAct("ask");
+    } else if (key == KEY_BRIGHT) {
+        sendAct("bright");
+    } else if (key == KEY_ALERT) {
+        sendAct("alert");
+    } else if (key == KEY_ENTER && model.status.tune.nModel) {
+        openTune();
     } else if (key == KEY_UP || key == KEY_DOWN) {
         model.logScroll = (int16_t)clampInt(model.logScroll + (key == KEY_UP ? 1 : -1), 0, model.logMax);
-    } else if (key == KEY_ESC) {   // takes back a queued saved prompt, else back to live: the newest line
-        if (model.status.queued[0]) sendMenu(key, "unqueue");
-        else model.logScroll = 0;
-    } else if (key == KEY_ENTER && model.status.menu) {
-        sendMenu(key, "menu");
-    } else if (key >= 1 && key <= DIRECT_PICKS) {
-        quickKey(key);
+    } else if (key == KEY_ESC) {   // back to live: the newest line
+        model.logScroll = 0;
     }
-}
-
-// A saved prompt in one press: keys 1-3, 4 and 8 are prompts 1-5. Not right after a request went away
-// (that press meant "Yes" or "No"), and never on a dialog.
-void quickKey(uint8_t key) {
-    int idx = key <= DIRECT_PICKS ? key - 1 : key == KEY_QUICK_4 ? 3 : 4;
-    if (idx < model.status.nQuick && millis() - model.screenEndedAt > QUICK_GUARD_MS) sendMenu(key, "quick", idx);
 }
 
 void sessionsKey(uint8_t key) {
     if (key == KEY_SESSIONS || key == KEY_ESC) model.mode = Mode::Status;
     else if (key == KEY_UP || key == KEY_DOWN) model.pick = (int8_t)clampInt(model.pick + (key == KEY_UP ? -1 : 1), 0, model.status.n ? model.status.n - 1 : 0);
     else if (key == KEY_ENTER) chooseSession(model.pick);
-    else if (key >= 1 && key <= DIRECT_PICKS && key <= model.status.n) chooseSession(key - 1);
 }
 
 void onKey(const KeyEvent &ev) {
     if (ev.action != KeyAction::Press || !ev.clean) return;   // one key at a time (the matrix has no diodes)
     if (wakeOnly()) return;   // the first press on a dim screen only wakes it
     uint8_t key = ev.key == KEY_ENC ? KEY_ENTER : ev.key;   // pressing the knob is Enter
-    if (key == KEY_QUICK_4 || key == KEY_QUICK_5) {   // moving is the knob's job: these two are saved prompts, on the status screen only
-        if (model.mode == Mode::Status) quickKey(key);
-        return;
-    }
     if (model.mode == Mode::Screen && model.screen.active) {
         // Safety: never a press that began before the screen appeared.
         if (ev.pressedAt < model.screen.shownAt + STALE_PRESS_MS) return;
@@ -579,6 +623,8 @@ void onKey(const KeyEvent &ev) {
         statusKey(key);
     } else if (model.mode == Mode::Sessions) {
         sessionsKey(key);
+    } else if (model.mode == Mode::Tune) {
+        tuneKey(key);
     }
 }
 
@@ -600,6 +646,7 @@ void onEncoder(int32_t steps) {
         if (model.mode == Mode::Screen && model.screen.active) screenKey(key);
         else if (model.mode == Mode::Status) statusKey(key);
         else if (model.mode == Mode::Sessions) sessionsKey(key);
+        else if (model.mode == Mode::Tune) tuneKey(key);
     }
 }
 
@@ -616,7 +663,7 @@ void tick() {
     bool connected = host.greeted;
 
     if (model.mode == Mode::Boot && now - bootAt > 1200) model.mode = connected ? Mode::Status : Mode::Waiting;
-    if (!connected && (model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Screen ||
+    if (!connected && (model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Tune || model.mode == Mode::Screen ||
                        model.mode == Mode::Ota)) {
         model.mode = Mode::Waiting;   // includes an update whose host went away
         model.screen.active = false;
@@ -626,16 +673,12 @@ void tick() {
     if (model.mode == Mode::Screen && model.screen.expiresAt && (int32_t)(now - model.screen.expiresAt) > 0) {
         model.screen.active = false;
         model.mode = Mode::Status;
-        model.screenEndedAt = now;
     }
-    if (model.mode == Mode::Screen && !model.screen.active) {
-        model.mode = Mode::Status;
-        model.screenEndedAt = now;
-    }
+    if (model.mode == Mode::Screen && !model.screen.active) model.mode = Mode::Status;
 
     // Idle on battery: dim the backlight (never with a request on screen or an update, and never
     // when running from a wire). A key press or a request lights it up again.
-    bool canDim = model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Waiting;
+    bool canDim = model.mode == Mode::Status || model.mode == Mode::Sessions || model.mode == Mode::Tune || model.mode == Mode::Waiting;
     bool dim = canDim && !model.usbPower && now - model.lastActivity > DIM_AFTER_MS;
     if (dim != model.dimmed) {
         model.dimmed = dim;
