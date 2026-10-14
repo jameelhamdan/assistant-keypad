@@ -163,6 +163,8 @@ class Rig:
 
 @pytest.fixture
 def rig(home):
+    if not keypad_sim.EXE.exists():  # the pytestmark above covers this module only, not the ones that import this fixture
+        pytest.skip("build the simulator: python firmware/sim/build.py")
     made = []
 
     def make(**kw):

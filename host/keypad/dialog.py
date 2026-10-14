@@ -106,7 +106,7 @@ def _run_powershell(script: str, env: dict[str, str], answers: tuple[str, ...] =
         with open(path, "w", encoding="utf-8-sig") as f:  # the BOM makes Windows PowerShell read it as UTF-8
             f.write(script)
         for _ in range(attempts):
-            r = subprocess.run(_powershell(path), capture_output=True, env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+            r = subprocess.run(_powershell(path), capture_output=True, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             out = r.stdout.decode("utf-8", errors="replace").rstrip("\r\n")
             if out.startswith(answers):
                 return out
