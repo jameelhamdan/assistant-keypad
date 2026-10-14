@@ -22,7 +22,7 @@ USAGE = """usage: keypad <command>
   agent               run the agent without a tray
   install             connect Claude Code and start Keypad at login
   uninstall           undo install
-  setup               pair a USB-connected keypad and give it Wi-Fi (--ssid, --pass or KEYPAD_WIFI_PASS, --name)
+  setup               pair a USB-connected keypad and give it Wi-Fi (--ssid, --pass, --name; or WIFI_SSID, WIFI_PASSWORD in .env)
   status              show keypads and Claude Code sessions
   hook <Event>        (used by Claude Code)
   version

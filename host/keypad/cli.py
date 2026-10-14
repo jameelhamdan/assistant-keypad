@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import time
+from pathlib import Path
 
 from . import claudecfg, config, ipc, osutil, service
 from .dirs import self_path
@@ -52,6 +53,22 @@ def _opt(args: list[str], name: str) -> str | None:
     return None
 
 
+def _dotenv() -> dict[str, str]:
+    """KEY=value lines of the nearest .env above the current directory (comments, quotes and `export` allowed)."""
+    here = Path.cwd().resolve()
+    for d in (here, *here.parents):
+        f = d / ".env"
+        if f.is_file():
+            out: dict[str, str] = {}
+            for line in f.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip().removeprefix("export ").strip()
+                k, sep, v = line.partition("=")
+                if sep and k.strip() and not line.startswith("#"):
+                    out[k.strip()] = v.strip().strip("\"'")
+            return out
+    return {}
+
+
 def _wait(find, seconds: float, hint: str):
     """Polls the agent's status until find(status) returns something (None after `seconds`)."""
     end, told = time.monotonic() + seconds, False
@@ -67,17 +84,22 @@ def _wait(find, seconds: float, hint: str):
 
 def cmd_setup(args: list[str]) -> None:
     """`keypad setup`: pairs a keypad plugged in with USB and gives it Wi-Fi, the tray's Set up a keypad without dialogs."""
-    name = _opt(args, "--name") or "Desk keypad"
-    ssid = _opt(args, "--ssid") or osutil.ssid()
+    env = _dotenv()
+
+    def setting(*names: str) -> str | None:  # the environment first, then .env
+        return next((v for n in names if (v := os.environ.get(n, env.get(n))) is not None), None)
+
+    name = _opt(args, "--name") or setting("KEYPAD_NAME") or "Desk keypad"
+    ssid = _opt(args, "--ssid") or setting("KEYPAD_WIFI_SSID", "WIFI_SSID") or osutil.ssid()
     password = _opt(args, "--pass")
     if password is None:
-        password = os.environ.get("KEYPAD_WIFI_PASS")
+        password = setting("KEYPAD_WIFI_PASS", "WIFI_PASSWORD")
     if password is None and sys.stdin.isatty():
         password = getpass.getpass(f"Wi-Fi password for {ssid or 'the network'}: ")
     if not ssid:
         raise RuntimeError("no Wi-Fi network name: pass --ssid (the keypad joins 2.4 GHz networks)")
     if password is None:
-        raise RuntimeError("no Wi-Fi password: pass --pass, or set KEYPAD_WIFI_PASS (empty for an open network)")
+        raise RuntimeError("no Wi-Fi password: pass --pass, or set WIFI_PASSWORD in .env or KEYPAD_WIFI_PASS (empty for an open network)")
     call("POST", "/pairing")
     usb = _wait(lambda s: next((k for k in s.get("keypads", []) if k["link"] == "usb"), None), 45,
                 "Plug the keypad into this computer with a USB-C data cable…")
