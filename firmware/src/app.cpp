@@ -617,7 +617,7 @@ void onKey(const KeyEvent &ev) {
     uint8_t key = ev.key == KEY_ENC ? KEY_ENTER : ev.key;   // pressing the knob is Enter
     if (model.mode == Mode::Screen && model.screen.active) {
         // Safety: never a press that began before the screen appeared.
-        if (ev.pressedAt < model.screen.shownAt + STALE_PRESS_MS) return;
+        if ((int32_t)(ev.pressedAt - (model.screen.shownAt + STALE_PRESS_MS)) < 0) return;   // wrap-safe
         screenKey(key);
     } else if (model.mode == Mode::Status) {
         statusKey(key);

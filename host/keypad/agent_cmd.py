@@ -11,6 +11,8 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
+from typing import Any
 
 from . import config, ipc, osutil
 from .core.agent import Agent
@@ -101,8 +103,19 @@ def start_agent() -> tuple[threading.Event, logging.Logger] | None:
                 log.exception("ipc server error; restarting")
                 time.sleep(1)
 
-    for target, targs in ((serve, ()), (agent.run, (stop,)), (hub.run, (stop,)), (watch, (stop, agent))):
-        threading.Thread(target=target, args=targs, daemon=True).start()
+    def supervised(target: Callable[..., None], *targs: Any) -> None:
+        # A bug in one loop (the transcript poll, the hub scan) must not leave the agent running but deaf.
+        while not stop.is_set():
+            try:
+                target(*targs)
+                return
+            except Exception:
+                log.exception("%s failed; restarting", getattr(target, "__qualname__", target))
+                stop.wait(1)
+
+    threading.Thread(target=serve, daemon=True).start()
+    for target, targs in ((agent.run, (stop,)), (hub.run, (stop,)), (watch, (stop, agent))):
+        threading.Thread(target=supervised, args=(target, *targs), daemon=True).start()
 
     log.info("agent started version=%s host_id=%s config=%s pid=%d", version(), store.host_id(),
              config.config_path(), os.getpid())

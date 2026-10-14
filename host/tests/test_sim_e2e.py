@@ -93,7 +93,12 @@ class SimLink(Link):
             self._pump()
 
     def screens(self) -> list[dict]:
-        return [m for m in self.sent if m["t"] == "screen"]
+        """Screens in order, each id once: a reconnect may legitimately send the current screen again."""
+        seen: dict[str, dict] = {}
+        for m in self.sent:
+            if m["t"] == "screen":
+                seen.setdefault(m["id"], m)
+        return list(seen.values())
 
     def toasts(self) -> list[dict]:
         return [m for m in self.sent if m["t"] == "toast"]

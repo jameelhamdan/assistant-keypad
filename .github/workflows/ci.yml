@@ -77,12 +77,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: "3.12"
+      # penv links to the exact Python patch version, so it is part of the key
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+          key: pio-${{ steps.py.outputs.python-version }}-${{ hashFiles('firmware/platformio.ini') }}
       - run: pip install platformio
       - run: pio test -e native
         working-directory: firmware
@@ -110,12 +112,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: "3.12"
+      # penv links to the exact Python patch version, so it is part of the key
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+          key: pio-${{ steps.py.outputs.python-version }}-${{ hashFiles('firmware/platformio.ini') }}
       - run: pip install platformio ziglang pillow pytest
       - run: pio run -e keypad
         working-directory: firmware

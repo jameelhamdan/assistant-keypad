@@ -128,13 +128,15 @@ def client_handshake(sock: socket.socket, host_id: str, want_id: str, psk_hex: s
         h = json.loads(read_frame(sock))
     except ValueError as e:
         raise SecureError("bad keypad hello") from e
+    if not isinstance(h, dict):
+        raise SecureError("bad keypad hello")
     if h.get("t") == "no":
         raise Refused(str(h.get("why", "")), str(h.get("code", "")), str(h.get("host", "")))
     if h.get("t") != "hi" or h.get("v") != VERSION or h.get("id") != want_id:
         raise SecureError(f"unexpected keypad {h.get('id', '')!r}")
     try:
         nd = bytes.fromhex(h.get("n", ""))
-    except ValueError as e:
+    except (ValueError, TypeError) as e:
         raise SecureError("bad keypad nonce") from e
     if len(nd) != NONCE_SIZE:
         raise SecureError("bad keypad nonce")
