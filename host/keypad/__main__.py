@@ -22,6 +22,7 @@ USAGE = """usage: keypad <command>
   agent               run the agent without a tray
   install             connect Claude Code and start Keypad at login
   uninstall           undo install
+  setup               pair a USB-connected keypad and give it Wi-Fi (--ssid, --pass or KEYPAD_WIFI_PASS, --name)
   status              show keypads and Claude Code sessions
   hook <Event>        (used by Claude Code)
   version
@@ -61,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from . import cli
 
-            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "status": cli.cmd_status}.get(cmd)
+            fn = {"install": cli.cmd_install, "uninstall": cli.cmd_uninstall, "status": cli.cmd_status, "setup": cli.cmd_setup}.get(cmd)
             if fn is None:
                 print(USAGE, end="", file=sys.stderr)
                 return 2
